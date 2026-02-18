@@ -17,7 +17,7 @@ This project extends [nanochat](https://github.com/karpathy/nanochat) to train l
 
 ```bash
 # Clone this repository
-git clone https://github.com/yourusername/historical-nanochat.git
+git clone https://github.com/AshitaOrbis/historical-nanochat.git
 cd historical-nanochat
 
 # Create virtual environment
@@ -154,4 +154,4 @@ MIT License (same as nanochat)
 
 ## Contributing
 
-Contributions welcome! See the plan file at `.claude/plans/purring-moseying-cocoa.md` for the full implementation roadmap.
+Contributions welcome! Open an issue or submit a pull request.
