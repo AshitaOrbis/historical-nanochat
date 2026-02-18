@@ -2,6 +2,7 @@
 name = "historical-nanochat"
 version = "0.1.0"
 description = "Historical time-locked LLM training using nanochat pipeline"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "datasets>=2.18.0",
