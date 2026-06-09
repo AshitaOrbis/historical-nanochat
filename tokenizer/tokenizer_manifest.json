@@ -1,0 +1,55 @@
+{
+  "script_version": "3.0.0",
+  "git_commit": "516934a8f84e8b2971ca233a26b07488dfcc5219",
+  "timestamp": "2026-04-19T22:35:53-0700",
+  "tokenizer": {
+    "format": "nanochat_rustbpe_tiktoken",
+    "vocab_size": 32768,
+    "special_tokens": {
+      "<|bos|>": 32759,
+      "<|user_start|>": 32760,
+      "<|user_end|>": 32761,
+      "<|assistant_start|>": 32762,
+      "<|assistant_end|>": 32763,
+      "<|python_start|>": 32764,
+      "<|python_end|>": 32765,
+      "<|output_start|>": 32766,
+      "<|output_end|>": 32767
+    },
+    "byte_coverage": "complete (256/256)"
+  },
+  "training": {
+    "max_chars": 10000000000,
+    "doc_cap": 10000,
+    "train_time_sec": 422.0
+  },
+  "inputs": {
+    "corpus_dir": "/home/user/historical-nanochat/data/shards"
+  },
+  "outputs": {
+    "tokenizer_pkl": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/tokenizer.pkl",
+    "sha256_tokenizer_pkl": "f4ab5cefc176723b19efe900b48b43ab4ef8946d0aedbe8f7736d9b306144b39",
+    "token_bytes_pt": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/token_bytes.pt",
+    "sha256_token_bytes_pt": "54bb3649b1b0a18783f1f027c03d274ee62306cae10c2b70611366f14c088656"
+  },
+  "validation": {
+    "byte_coverage_failures": 0,
+    "test_strings": 9,
+    "test_string_failures": 0,
+    "corpus_samples": 500,
+    "corpus_sample_failures": 0,
+    "full_unk_scan": {
+      "shards_scanned": 322,
+      "docs_scanned": 72599552,
+      "chars_scanned": 85741592813,
+      "byte_drop_docs": 0,
+      "elapsed_sec": 6160.77
+    }
+  },
+  "token_bytes_stats": {
+    "zero_count": 9,
+    "nonzero_min": 1,
+    "max": 17,
+    "mean_nonzero": 5.519307613372803
+  }
+}

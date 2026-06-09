@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v4_smoke_series_report</title>
+<style>
+:root { color-scheme: light dark; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  max-width: 42em; margin: 1.25rem auto; padding: 0 1rem 4rem;
+  line-height: 1.55; font-size: 17px;
+  background: #fff; color: #1b1b1b;
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #111; color: #e4e4e4; }
+  a { color: #7ab7ff; }
+  code, pre { background: #1e1e1e; color: #f0f0f0; }
+  blockquote { border-color: #444; color: #bbb; }
+  table { border-color: #333; }
+  th, td { border-color: #333; }
+  th { background: #1e1e1e; }
+}
+h1, h2, h3, h4 { line-height: 1.2; margin-top: 1.8em; }
+h1 { font-size: 1.7em; border-bottom: 1px solid rgba(128,128,128,0.3); padding-bottom: 0.3em; }
+h2 { font-size: 1.35em; border-bottom: 1px solid rgba(128,128,128,0.2); padding-bottom: 0.2em; }
+h3 { font-size: 1.15em; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+       background: rgba(128,128,128,0.12); padding: 0.1em 0.35em; border-radius: 4px;
+       font-size: 0.92em; }
+pre { background: rgba(128,128,128,0.12); padding: 0.9em 1em; border-radius: 6px;
+      overflow-x: auto; font-size: 0.9em; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #ccc; margin: 1em 0; padding: 0.2em 1em; color: #555; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.95em; }
+th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; text-align: left; vertical-align: top; }
+th { background: #f5f5f5; }
+img { max-width: 100%; height: auto; }
+hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 2em 0; }
+ul, ol { padding-left: 1.5em; }
+a { color: #0366d6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1 id="v4-smoke-series-three-run-comparative-report">v4 Smoke Series — Three-Run Comparative Report</h1>
+<p>Three GPU smokes were run against the <code>corpus_1913_v4_balanced_candidate</code> corpus / <code>token_cache_v4_balanced_candidate</code> (~19.12 B train + 2.86 B val). Each run used d22 / T=1024 / DBS=8 / total_batch=262144 / compile_mode=default / no activation checkpointing / isolated <code>compute.slice</code> scope. No OOM, NaN, compile instability, or cgroup cascade in any run — the <strong>v4 pipeline is mechanically correct</strong>.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>smoke #1</th>
+<th>smoke #2</th>
+<th>smoke #3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>run name</td>
+<td><code>governed_v4_smoke_d22_pre_poc</code></td>
+<td><code>governed_v4_smoke2_d22_softlr_pre_poc</code></td>
+<td><code>governed_v4_smoke3_d22_splitshards_pre_poc</code></td>
+</tr>
+<tr>
+<td>steps</td>
+<td>200</td>
+<td>200 (stopped)</td>
+<td>300 (stopped) of 400</td>
+</tr>
+<tr>
+<td>warmup_ratio</td>
+<td>0</td>
+<td>0.02</td>
+<td>0.02</td>
+</tr>
+<tr>
+<td>warmdown_ratio</td>
+<td>0.4</td>
+<td>0.4</td>
+<td>0.4</td>
+</tr>
+<tr>
+<td>embedding_lr</td>
+<td>0.30</td>
+<td>0.20</td>
+<td>0.20</td>
+</tr>
+<tr>
+<td>matrix_lr</td>
+<td>0.020</td>
+<td>0.015</td>
+<td>0.015</td>
+</tr>
+<tr>
+<td>unembedding_lr</td>
+<td>0.004</td>
+<td>0.003</td>
+<td>0.003</td>
+</tr>
+<tr>
+<td>train cache</td>
+<td>3,125 shards, 15M mean</td>
+<td>same</td>
+<td><strong>18,926 split sub-shards, 1M mean</strong></td>
+</tr>
+<tr>
+<td>val cache</td>
+<td>90 shards, 32M mean</td>
+<td>same</td>
+<td><strong>2,881 split sub-shards, 1M mean</strong></td>
+</tr>
+<tr>
+<td>compile stable</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>OOM / NaN</td>
+<td>none</td>
+<td>none</td>
+<td>none</td>
+</tr>
+<tr>
+<td>peak VRAM</td>
+<td>17.13 GiB</td>
+<td>17.13 GiB</td>
+<td>17.13 GiB</td>
+</tr>
+<tr>
+<td>tok/sec</td>
+<td>16,380</td>
+<td>16,380</td>
+<td>16,365</td>
+</tr>
+<tr>
+<td>loader_pct_mean</td>
+<td>0.17%</td>
+<td>0.17%</td>
+<td>0.17%</td>
+</tr>
+<tr>
+<td>checkpoint save sha match</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>step-0 val BPB</td>
+<td>4.996</td>
+<td>4.996</td>
+<td><strong>3.894</strong></td>
+</tr>
+<tr>
+<td>step-100 val BPB</td>
+<td>1.84</td>
+<td>1.82</td>
+<td>2.23</td>
+</tr>
+<tr>
+<td>step-200 val BPB</td>
+<td>1.63</td>
+<td>— (stopped)</td>
+<td>2.27</td>
+</tr>
+<tr>
+<td>step-300 val BPB</td>
+<td>—</td>
+<td>—</td>
+<td>2.23</td>
+</tr>
+<tr>
+<td>best train raw loss</td>
+<td>3.97 (step 70, then diverges)</td>
+<td>—</td>
+<td>4.70 (step 190)</td>
+</tr>
+<tr>
+<td>loss pattern</td>
+<td>within-shard descent, between-shard spikes</td>
+<td>same as #1</td>
+<td>noisy around 5.5-6.5, no sustained descent</td>
+</tr>
+<tr>
+<td><strong>verdict</strong></td>
+<td><strong>mechanical PASS, dynamics FAIL</strong> (divergence at shard flip)</td>
+<td><strong>mechanical PASS, dynamics FAIL</strong> (same spike pattern)</td>
+<td><strong>mechanical PASS, dynamics FAIL</strong> (plateau)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-we-learned">What we learned</h2>
+<ol>
+<li>
+<p><strong>Mechanical pipeline is solid.</strong> The v4 corpus, token cache, dataloader, compile path, checkpoint save/resume, val loader, isolated scope, and crash-hardening all work across three runs with no faults.</p>
+</li>
+<li>
+<p><strong>LR softening alone doesn't fix diverse-batch training.</strong> Smoke #2 replicated smoke #1's spike-at-shard-flip pattern despite -33% peak LR.</p>
+</li>
+<li>
+<p><strong>Shard-splitting fixed the "family-blocked" issue</strong> (99.9% adjacent same-family → 27% after split). Diag logs show the dataloader now switches shards every 3-6 steps across all 5 families.</p>
+</li>
+<li>
+<p><strong>But shard-splitting + softened LR produced a different failure:</strong> loss plateau after ~100 steps. The model hits a "generalist floor" — good at averaging across families but not specializing enough to push past ~5.5 train loss / ~2.25 val BPB. Likely: 1M-token shards give only 4 gradient updates per shard before flipping, insufficient to "lock in" any family-specific pattern, and each flip partially undoes the last.</p>
+</li>
+<li>
+<p><strong>Val BPB comparisons across smokes are unreliable</strong> because val cache was split+shuffled differently per smoke. Only within-smoke trajectories are apples-to-apples.</p>
+</li>
+</ol>
+<h2 id="fundamental-question">Fundamental question</h2>
+<p>Can d22 (616M params) productively train on v4's diverse 5-family corpus at these LRs and cache granularities, in a meaningful wall-clock? Three 200-400-step smokes don't definitively answer it. Observations:</p>
+<ul>
+<li>The "shard divergence" in smoke #1/#2 (loss 3.97 → 6.01 when shard flips legal → newspapers) <strong>is real learning being overwritten</strong>, not a mathematical pathology. Over a 70,500-step run, with hundreds of family rotations, the loss oscillations should average toward a real descent — but we can't prove that from a 200-400 step smoke.</li>
+<li>The plateau in smoke #3 may be a real failure OR may be a 300-step artifact. We'd need ~2,000-5,000 steps to know if the plateau persists or breaks.</li>
+<li>Legacy's 95%-homogeneous corpus trained cleanly because all batches came from one distribution. v4's 5-family mix is fundamentally harder.</li>
+</ul>
+<h2 id="three-paths-forward">Three paths forward</h2>
+<h3 id="path-a-launch-long-run-with-smoke-2-config-monitor-aggressively">Path A — Launch long run with smoke #2 config, monitor aggressively</h3>
+<ul>
+<li>Use <strong>original (unsplit) cache</strong> + <strong>softened LR</strong> (smoke #2 config).</li>
+<li>Run 70,500 steps; check val BPB every 2000 steps; stop if val diverges or plateaus by step 5000.</li>
+<li><strong>Pros:</strong> real long-run signal. If loss dynamics are transient oscillations on short horizons but descend over 70k steps, we'll see that.</li>
+<li><strong>Cons:</strong> ~7 days of 3090 time at risk if the divergence is sustained. Sunk cost if smoke wasn't predictive.</li>
+<li><strong>Fallback:</strong> if val plateaus by step 5000, stop and try Path B.</li>
+</ul>
+<h3 id="path-b-write-a-parallel-shard-dataloader">Path B — Write a parallel-shard dataloader</h3>
+<ul>
+<li>Modify <code>dataloader_cached</code> to read from N shards simultaneously and round-robin tokens into each batch. This gives <strong>batch-level</strong> family mixing instead of shard-level.</li>
+<li>This is what the parquet dataloader already does via row-group striping — just need the cached-loader equivalent.</li>
+<li><strong>Pros:</strong> addresses the root cause (per-batch family homogeneity) without retokenization.</li>
+<li><strong>Cons:</strong> 4-8 hours of dataloader engineering + another smoke cycle.</li>
+</ul>
+<h3 id="path-c-accept-that-d22-v4-diversity-needs-curriculum">Path C — Accept that d22 + v4 diversity needs curriculum</h3>
+<ul>
+<li>Train on one family at a time in sequence (newspapers for 20k, science for 15k, books for 15k, ...).</li>
+<li>Rebuild corpus as per-family caches rather than one mixed cache.</li>
+<li><strong>Pros:</strong> within-family descent is proven.</li>
+<li><strong>Cons:</strong> violates the "diverse training" principle of v4. Produces a model biased by the final family trained on. Not aligned with the governed PoC target.</li>
+</ul>
+<h2 id="recommendation">Recommendation</h2>
+<p><strong>Path A is the least-regret option.</strong> The smoke runs prove the v4 pipeline is mechanically correct; they don't conclusively prove that long training will fail. Running the long run with stop-gates at steps 2000, 5000, 10000 lets us make an empirical call with real data. If it's clearly plateauing by step 5000, we pivot to Path B.</p>
+<p>Explicit stop-gates for a Path A long run:</p>
+<table>
+<thead>
+<tr>
+<th>gate</th>
+<th style="text-align: right;">step</th>
+<th>criterion</th>
+<th>on-fail action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>first checkpoint</td>
+<td style="text-align: right;">2000</td>
+<td>val BPB &lt; 2.50 AND train loss &lt; 5.0</td>
+<td>stop, review</td>
+</tr>
+<tr>
+<td>early progress</td>
+<td style="text-align: right;">5000</td>
+<td>val BPB &lt; 2.20 AND train loss &lt; 4.5</td>
+<td>stop, pivot to Path B</td>
+</tr>
+<tr>
+<td>mid-run</td>
+<td style="text-align: right;">20000</td>
+<td>val BPB &lt; 1.80</td>
+<td>stop, eval results</td>
+</tr>
+<tr>
+<td>mid-run</td>
+<td style="text-align: right;">42000</td>
+<td>val BPB &lt; 1.50 (entering warmdown)</td>
+<td>review</td>
+</tr>
+<tr>
+<td>completion</td>
+<td style="text-align: right;">70500</td>
+<td>val BPB &lt; 1.30 (preferred)</td>
+<td>publish as PoC</td>
+</tr>
+</tbody>
+</table>
+<h2 id="artifacts">Artifacts</h2>
+<ul>
+<li>smoke #1: <code>report/v4_smoke_launch_record.json</code>, <code>report/v4_smoke_result.md</code>, <code>base_checkpoints/v4_smoke_d22/*</code></li>
+<li>smoke #2: <code>report/v4_smoke2_launch_record.json</code>, <code>logs/phase0/v4_smoke2_d22.log</code></li>
+<li>smoke #3: <code>logs/phase0/v4_smoke3_d22.log</code>, <code>base_checkpoints/v4_smoke3_d22/model_000200.pt</code></li>
+<li>post-split cache: <code>token_cache_v4_balanced_candidate/</code> (shuffled w/ seed 11)</li>
+<li>crash postmortem: <code>report/crash_2026-04-21_oom_cgroup_postmortem.md</code></li>
+<li>recovery plan: <code>report/governed_corpus_recovery_plan_2026-04-21.md</code></li>
+</ul>
+<h2 id="ready-state-summary">Ready state summary</h2>
+<ul>
+<li>v4 corpus: ready</li>
+<li>v4 cache: ready (split+shuffled)</li>
+<li>Training stack: mechanically validated across 3 smokes</li>
+<li><strong>Long-run launch: BLOCKED on user decision between Path A / B / C</strong></li>
+</ul>
+<p>GPU is idle (1.6 GB / 24 GB). No CPU jobs running. Legacy step-4000 checkpoint preserved as fallback (verified 12/12 PASS).</p>
+</body>
+</html>

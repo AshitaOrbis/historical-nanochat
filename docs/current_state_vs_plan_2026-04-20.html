@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>current_state_vs_plan_2026-04-20</title>
+<style>
+:root { color-scheme: light dark; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  max-width: 42em; margin: 1.25rem auto; padding: 0 1rem 4rem;
+  line-height: 1.55; font-size: 17px;
+  background: #fff; color: #1b1b1b;
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #111; color: #e4e4e4; }
+  a { color: #7ab7ff; }
+  code, pre { background: #1e1e1e; color: #f0f0f0; }
+  blockquote { border-color: #444; color: #bbb; }
+  table { border-color: #333; }
+  th, td { border-color: #333; }
+  th { background: #1e1e1e; }
+}
+h1, h2, h3, h4 { line-height: 1.2; margin-top: 1.8em; }
+h1 { font-size: 1.7em; border-bottom: 1px solid rgba(128,128,128,0.3); padding-bottom: 0.3em; }
+h2 { font-size: 1.35em; border-bottom: 1px solid rgba(128,128,128,0.2); padding-bottom: 0.2em; }
+h3 { font-size: 1.15em; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+       background: rgba(128,128,128,0.12); padding: 0.1em 0.35em; border-radius: 4px;
+       font-size: 0.92em; }
+pre { background: rgba(128,128,128,0.12); padding: 0.9em 1em; border-radius: 6px;
+      overflow-x: auto; font-size: 0.9em; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #ccc; margin: 1em 0; padding: 0.2em 1em; color: #555; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.95em; }
+th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; text-align: left; vertical-align: top; }
+th { background: #f5f5f5; }
+img { max-width: 100%; height: auto; }
+hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 2em 0; }
+ul, ol { padding-left: 1.5em; }
+a { color: #0366d6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1 id="historical-nanochat-current-state-vs-apr-20-plan">Historical Nanochat — Current State vs Apr-20 Plan</h1>
+<p>Report prepared 2026-04-20 for GPT Pro review.</p>
+<p>This document describes the <em>actual</em> state of training data, corpus pipeline,
+and the currently-running base run, and maps that state against the three plan
+documents dated Apr 19:</p>
+<ul>
+<li><code>historical_nanochat_claude_code_action_plan.md</code> (Phase 0 implementation spec)</li>
+<li><code>historical_nanochat_next_steps.md</code> (phase map through release)</li>
+<li><code>historical_nanochat_access_emails.md</code> (outreach templates)</li>
+</ul>
+<hr />
+<h2 id="1-tldr">1. TL;DR</h2>
+<ul>
+<li><strong>A 13-day d22 base training run is in progress</strong> (started 2026-04-20
+  09:05 UTC). It is using an <em>older</em> data pipeline — not the one the Apr-19
+  plan documents prescribe.</li>
+<li><strong>The plan has a clear Phase 0 (corpus/pipeline) that must clear Gate A
+  before Phase 2 (3090 PoC model) matters.</strong> The currently-running d22 job
+  is effectively Phase 2. Gate A is <strong>partially satisfied at best</strong> — some
+  elements are in place, several are absent, and one element (provenance
+  preservation in training shards) is materially missing.</li>
+<li>The <em>training stack</em> is solid: retrained rustbpe tokenizer with full
+  32768 nanochat special-token layout, 100% 256-byte coverage, 0 byte
+  drops on 72.6 M docs / 85.7 B chars, dataloader with cached-tokens
+  path, sweep verified d22 as the right depth under the 24 GB budget.</li>
+<li>The <em>data</em> itself predates the plan. It has reasonable raw coverage
+  (8 sources, ~85 B raw chars after packaging) but violates several of
+  the plan's Phase-0 requirements (see §3).</li>
+<li><strong>Decision needed</strong>: let the d22 run complete as a "pipeline validation</li>
+<li>baseline loss curve" artifact while we build Phase-0 on the side, or
+  kill it and rebuild to the plan first. Either is defensible. The sunk
+  compute is ~30 hours of 3090 time; the 13-day ETA is 1.3× the time to
+  rebuild Phase 0 and re-pack shards (rough estimate, 10 days for a
+  single operator).</li>
+</ul>
+<hr />
+<h2 id="2-what-the-plan-demands-of-phase-0">2. What the plan demands of Phase 0</h2>
+<p>Summarized from <code>historical_nanochat_claude_code_action_plan.md</code> §1-§16:</p>
+<h3 id="21-repo-layout">2.1 Repo layout</h3>
+<pre><code class="language-text">data/
+  sources/registry.yaml         # every source registered BEFORE any harvester writes
+  harvesters/                   # per-source harvesters: 11 P0 sources
+  process/                      # rights_audit, date_audit, dedupe, ocr_quality, ocr_triage, pack_to_parquet, manifests
+  prompts/                      # OCR + synthetic-data contracts
+  schemas/                      # Pydantic: document, page, source, ocr_queue, training_record
+  scripts/                      # harvest_source, build_poc_corpus, audit_corpus, build_training_shards, estimate_tokens, make_ocr_queue
+  tests/                        # test_registry, test_rights_audit, test_date_audit, test_dedupe, test_pack_to_parquet
+</code></pre>
+<h3 id="22-rights-audit-fail-closed">2.2 Rights audit (fail closed)</h3>
+<ul>
+<li>Default action for unknown rights: <strong>exclude</strong>.</li>
+<li>Default action for missing date: <strong>exclude from training</strong>.</li>
+<li>Default action for post-cutoff date: <strong>exclude</strong>.</li>
+<li>For mixed-rights sources, require explicit item-level rights evidence.</li>
+<li>Output per-source audit JSON + Markdown.</li>
+</ul>
+<h3 id="23-date-audit-confidence-hierarchy">2.3 Date audit (confidence hierarchy)</h3>
+<pre><code class="language-text">exact date &gt; year &gt; range &gt; inferred from bibliographic field &gt; weak text guess &gt; unknown
+</code></pre>
+<ul>
+<li>Exclude records where only ingestion/download date is known (e.g. Gutenberg
+  release date ≠ publication date).</li>
+<li>Preserve raw date field + confidence score.</li>
+<li>Cutoff buckets: <code>pre1850</code>, <code>1850_1875</code>, <code>1875_1900</code>, <code>1900_1913</code>, <code>post_cutoff_exclude</code>, <code>unknown_exclude</code>.</li>
+</ul>
+<h3 id="24-unified-document-schema">2.4 Unified document schema</h3>
+<p>Every shard record should preserve at minimum:</p>
+<pre><code class="language-text">text, source_id, document_id, page_id, segment_id, title, author,
+publication_date, publication_year, date_confidence, language,
+language_confidence, country_or_region, publication_place, publisher,
+genre, subgenre, rights, rights_url, source_url, citation,
+ocr_engine, ocr_quality_estimate, source_quality,
+content_hash, dedupe_hash, word_count, char_count, token_estimate,
+cutoff_bucket, sensitive_content, metadata
+</code></pre>
+<h3 id="25-gate-a-before-any-3090-training">2.5 Gate A (before any 3090 training)</h3>
+<p>Proceed only if:</p>
+<ol>
+<li>At least 1 B clean token estimate exists.</li>
+<li>Validation shard is held out <strong>by document/source</strong> (not just row split).</li>
+<li>Unknown rights/date records excluded.</li>
+<li>Training script loads parquet directly (no intermediate step).</li>
+<li>Smoke test runs.</li>
+</ol>
+<h3 id="26-recommended-first-corpus-mix-phase-1">2.6 Recommended first corpus mix (Phase 1)</h3>
+<pre><code class="language-yaml">books_general: 0.35
+newspapers_periodicals: 0.30
+legal_government: 0.15
+science_technical: 0.10
+early_modern: 0.05
+misc_holdout_or_eval: 0.05
+</code></pre>
+<h3 id="27-phase-2-eval-suite">2.7 Phase 2 eval suite</h3>
+<ul>
+<li>Held-out historical validation loss <strong>by source family</strong>.</li>
+<li>Cutoff anachronism test.</li>
+<li>Source-grounded QA test.</li>
+<li>Style continuation test.</li>
+<li>Synthetic-data pilot.</li>
+</ul>
+<hr />
+<h2 id="3-what-we-actually-have">3. What we actually have</h2>
+<h3 id="31-raw-deduped-jsonl-by-source">3.1 Raw deduped JSONL by source</h3>
+<p>Located at <code>/home/user/historical-nanochat/data/deduped/</code> (ext4, 398 GB total):</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th style="text-align: right;">JSONL size</th>
+<th>Approx record schema</th>
+<th>Has <code>source</code></th>
+<th>Has date</th>
+<th>Has <code>rights</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>american_stories</td>
+<td style="text-align: right;">275 GB</td>
+<td><code>text, source, year, date, newspaper, state, lccn, article_id</code></td>
+<td>yes</td>
+<td>yes (exact)</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>bhl</td>
+<td style="text-align: right;">126 GB</td>
+<td><code>text, source, year, item_id, file</code></td>
+<td>yes</td>
+<td>yes (year)</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>bl_newspapers</td>
+<td style="text-align: right;">12 GB</td>
+<td>—</td>
+<td>yes</td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>eebo</td>
+<td style="text-align: right;">6.5 GB</td>
+<td>—</td>
+<td>yes</td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>gutenberg</td>
+<td style="text-align: right;">4.2 GB</td>
+<td><code>text, source, metadata, estimated_year</code></td>
+<td>yes</td>
+<td>yes (inferred)</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>tcp</td>
+<td style="text-align: right;">1 GB</td>
+<td>—</td>
+<td>yes</td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>oldbailey</td>
+<td style="text-align: right;">452 MB</td>
+<td><code>text, source, year, date, type, file, id</code></td>
+<td>yes</td>
+<td>yes (exact)</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>chronicling_v2</td>
+<td style="text-align: right;">13 MB</td>
+<td>—</td>
+<td>yes</td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>caselaw</td>
+<td style="text-align: right;">86 KB</td>
+<td><code>text, source, year, court, case_name, id</code></td>
+<td>yes</td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>chronicling_america</td>
+<td style="text-align: right;">57 KB</td>
+<td>—</td>
+<td>yes</td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Observations:</p>
+<ul>
+<li><code>source</code> and some kind of date field are present in every source's JSONL.
+  The plan's Phase-0 expectations for at-ingest provenance are <strong>substantially
+  met</strong> at the raw JSONL level.</li>
+<li><strong><code>rights</code> is absent from every source.</strong> The rights audit the plan calls
+  for has never been executed; there is no per-record rights field in any
+  deduped JSONL file.</li>
+<li><code>caselaw</code> (86 KB) and <code>chronicling_america</code> (57 KB) are essentially empty.
+  The P0 CAP and raw Chronicling America harvesters either were never run
+  to completion or were deprecated in favor of American Stories (which
+  subsumes much of Chronicling America at article-level granularity).</li>
+</ul>
+<h3 id="32-existing-harvester-scripts">3.2 Existing harvester scripts</h3>
+<p><code>data/download/</code> contains (all authored before Apr 12):</p>
+<pre><code>american_stories_download.py  bl_newspapers_download.py   caselaw_download.py
+chronicling_download.py       chronicling_download_v2.py  chronicling_comparison.py
+eebo_convert.py               gutenberg_download.py       oldbailey_convert.py
+oldbailey_download.py         bhl_download.py             britannica_1911_download.py
+tcp_download.py
+</code></pre>
+<p>Observations:</p>
+<ul>
+<li>Covers most of the plan's P0 list (Gutenberg, IA-like, LOC-like,
+  Chronicling America, American Stories, BL Books via BL newspapers-only,
+  BHL, Old Bailey, CAP, TCP). Missing: formal <code>internet_archive</code>
+  harvester, <code>loc_selected_books</code> (LOC dataset), <code>ncse_v2</code>, <code>papers_past</code>,
+  <code>delpher</code>, <code>british_library_19c_books</code> (BL Books HF dataset — we have
+  BL <em>newspapers</em> instead).</li>
+<li>No source registry (<code>data/sources/registry.yaml</code>). Harvesters are
+  authored ad-hoc without a shared contract.</li>
+<li>Each harvester emits its own schema. The plan's unified document
+  schema does not exist as a Pydantic model; at ingest we get per-source
+  keys like <code>year</code> vs <code>estimated_year</code> vs <code>date</code> without normalization.</li>
+</ul>
+<h3 id="33-pre-existing-processing-modules">3.3 Pre-existing processing modules</h3>
+<p><code>data/process/</code> contains:</p>
+<ul>
+<li><code>contamination_check.py</code> — fixed during this session (was silently
+  skipping contextual terms via a broken SAFE-list). Validates 16 smoke
+  tests.</li>
+<li><code>dedup.py</code> — exists but I have not audited it against the plan's
+  SimHash/MinHash + cross-source strategy.</li>
+<li><code>shard_packager.py</code> — streaming packer (rewritten in this session)
+  with bounded shuffle buffer, OCR quality pre-filter, near-dedup via
+  content fingerprint, per-shard manifest with source distribution,
+  rejection-counter persistence.</li>
+<li><code>train_tokenizer.py</code> — pre-existing, used <code>RustBPETokenizer</code> path.</li>
+</ul>
+<p>Missing vs. the plan:</p>
+<ul>
+<li>No <code>rights_audit.py</code>.</li>
+<li>No <code>date_audit.py</code> as a standalone module with the confidence hierarchy
+  (date extraction was patched into <code>gutenberg_download.py</code> only).</li>
+<li>No <code>normalize_text.py</code> with the "preserve historical spelling" contract.</li>
+<li>No <code>ocr_triage.py</code>, <code>ocr_batch_export.py</code>, <code>ocr_batch_import.py</code>.</li>
+<li>No Pydantic schemas in <code>data/schemas/</code>.</li>
+<li>No <code>data/prompts/ocr_gpt54_contract.md</code>.</li>
+</ul>
+<h3 id="34-training-shards-currently-feeding-d22">3.4 Training shards currently feeding d22</h3>
+<p><strong>Path:</strong> <code>/home/user/historical-nanochat/data/shards/</code> (322 parquet files, 36 GB)
+<strong>Token cache:</strong> <code>/home/user/historical-nanochat/data/token_cache_v2/</code> (47 GB uint16, 25.2 B tokens)</p>
+<p>Shard-record schema: <code>{"text": str}</code> — <strong>no source_id, no date, no rights, no
+document_id, no cutoff_bucket, nothing else.</strong> All the provenance that was in
+the deduped JSONL was dropped at pack time.</p>
+<p>Source composition of these shards is <strong>not directly inspectable</strong> because
+there is no <code>manifest.json</code> in the shards directory (only
+<code>data/shards-small/stats.json</code> exists and has an empty <code>source_counts: {}</code>).</p>
+<p>What we can infer from the packaging defaults:</p>
+<p>The <code>shard_packager.py</code> module uses <code>DEFAULT_SAMPLE_RATES</code>:</p>
+<pre><code class="language-python">'american_stories': 0.33,   # 54.5B -&gt; ~18B
+'bhl': 0.60,                # 29.9B -&gt; ~18B
+'bl_newspapers': 1.0,       # Keep all 2.8B
+'gutenberg': 1.0,           # Keep all 1.7B
+'eebo': 1.0,                # Keep all 1.6B
+'tcp': 1.0,                 # Keep all 0.25B
+'oldbailey': 1.0,           # Keep all 0.11B
+</code></pre>
+<p>If these rates were applied to the deduped JSONL files (not confirmed), the
+expected composition is:</p>
+<table>
+<thead>
+<tr>
+<th>Source family</th>
+<th style="text-align: right;">Tokens (est.)</th>
+<th style="text-align: right;">Share</th>
+<th style="text-align: right;">Plan target (§3.6)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>American newspapers (AS + BL news)</td>
+<td style="text-align: right;">~21 B</td>
+<td style="text-align: right;">~56%</td>
+<td style="text-align: right;">30% (newspapers/periodicals)</td>
+</tr>
+<tr>
+<td>Science (BHL)</td>
+<td style="text-align: right;">~18 B</td>
+<td style="text-align: right;">~48%</td>
+<td style="text-align: right;">10% (science/technical)</td>
+</tr>
+<tr>
+<td>Books (Gutenberg + EEBO)</td>
+<td style="text-align: right;">~3.3 B</td>
+<td style="text-align: right;">~9%</td>
+<td style="text-align: right;">35% (books) + 5% (early modern)</td>
+</tr>
+<tr>
+<td>Early modern (TCP)</td>
+<td style="text-align: right;">~0.25 B</td>
+<td style="text-align: right;">&lt;1%</td>
+<td style="text-align: right;">5%</td>
+</tr>
+<tr>
+<td>Legal (Old Bailey + CAP)</td>
+<td style="text-align: right;">~0.11 B</td>
+<td style="text-align: right;">&lt;1%</td>
+<td style="text-align: right;">15% (legal/government)</td>
+</tr>
+</tbody>
+</table>
+<p>Actual token counts in the cache total 25.2 B; the above is a structural
+estimate of the ratios, not an accounting of the 25.2 B tokens.</p>
+<p><strong>This is materially different from the plan's recommended mix.</strong> The corpus
+is dominated by American newspapers and natural-history scientific texts.
+Legal representation is an order of magnitude smaller than the plan calls
+for. Book coverage is ~4× below target.</p>
+<h3 id="35-tokenizer">3.5 Tokenizer</h3>
+<ul>
+<li><code>tokenizer/tokenizer.pkl</code> (rustbpe + tiktoken wrapper), vocab 32768.</li>
+<li>All 9 nanochat specials present at ids 32759–32767.</li>
+<li>Complete 256-byte coverage (no [UNK] fallback needed).</li>
+<li>Full-corpus scan: 72.6 M docs / 85.7 B chars / <strong>0 byte drops</strong>.</li>
+<li><code>tokenizer_manifest.json</code> records SHA-256 of pkl + token_bytes,
+  training time (422 s on 10 B chars), validation stats.</li>
+</ul>
+<p>This is the one subsystem that fully matches what the plan implies.</p>
+<h3 id="36-training-loop-infrastructure">3.6 Training-loop infrastructure</h3>
+<p>Complete and validated in a multi-day sweep:</p>
+<ul>
+<li><code>NANOCHAT_PARQUET_DIR</code> + <code>--parquet-dir</code> explicit path.</li>
+<li><code>nanochat.dataloader_cached</code> (mmap-backed uint16 token stream).</li>
+<li>Activation checkpointing, chunked LM-head CE, GQA flag, compile-mode
+  selector, SDPA backend diagnostics.</li>
+<li>Seq-length curriculum mid-training switch.</li>
+<li>Loader-wait-time instrumentation (37% without cache → 0.2% with).</li>
+<li>Benchmark CSV: per-step throughput, peak VRAM, loader %.</li>
+<li>Startup assertions: vocab == len(token_bytes), BOS id matches manifest,
+  manifest SHA printed, resume-time wte/lm_head shape check.</li>
+<li>Save/resume round-trip verified at d24 (21.4 GB peak) and d16, d22.</li>
+</ul>
+<h3 id="37-currently-running-base-run">3.7 Currently-running base run</h3>
+<p>Kicked off 2026-04-20 09:05 UTC (pid 1641295, nohup + disown).</p>
+<pre><code class="language-text">depth                        d22 (615,645,184 params)
+max_seq_len                  1024
+device_batch_size            8
+total_batch_size             262,144 tokens/step
+target_param_data_ratio      30
+num_iterations               70,455
+total_tokens                 18,469,355,520 (18.47 B)
+compile_mode                 default
+activation_checkpoint        off
+tokenizer                    rustbpe vocab 32768
+token_cache                  /home/user/historical-nanochat/data/token_cache_v2
+save_every                   2000 (≈ 9 h between checkpoints)
+eval_every                   1000 (1 M-token BPB)
+core_metric_every            disabled (run post-training)
+peak VRAM target             ~17.5 GB / 24 GB
+expected wall                ~13 days at 16.4 k tok/s
+</code></pre>
+<p>Current step (at report time): step 20 of 70,455; tok/s 16.5 k (matches
+sweep); loader 0.1%; loss 6.58; init BPB 4.996 at step 0.</p>
+<hr />
+<h2 id="4-gap-analysis-against-gate-a">4. Gap analysis against Gate A</h2>
+<table>
+<thead>
+<tr>
+<th>Gate-A requirement</th>
+<th>Status</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>≥1 B clean token estimate</td>
+<td><strong>Satisfied</strong></td>
+<td>25.2 B tokens in token_cache_v2.</td>
+</tr>
+<tr>
+<td>Validation shard held out by document/source</td>
+<td><strong>Not satisfied</strong></td>
+<td>Parquet split is last-shard-is-val (row-level), not source-level holdout. Old Bailey / BHL / LOC books NOT explicitly held out.</td>
+</tr>
+<tr>
+<td>Unknown rights records excluded</td>
+<td><strong>Not satisfied</strong></td>
+<td>No rights audit has been run; <code>rights</code> field absent in every JSONL. Implicit assumption: everything in <code>deduped/</code> is public-domain because the sources we harvested are nominally PD. Assumption is unaudited.</td>
+</tr>
+<tr>
+<td>Unknown date records excluded</td>
+<td><strong>Partially satisfied</strong></td>
+<td>Gutenberg has a date-precedence extractor (issued &gt; death &gt; birth+20 &gt; fallback; drops "downloads" field); Old Bailey, American Stories, CAP have dates from source. No central date-confidence hierarchy; no "unknown-date exclude" enforcement.</td>
+</tr>
+<tr>
+<td>Training script loads parquet directly</td>
+<td><strong>Satisfied</strong></td>
+<td><code>--parquet_dir</code> and <code>--token_cache_dir</code> both work.</td>
+</tr>
+<tr>
+<td>Smoke test runs</td>
+<td><strong>Satisfied</strong></td>
+<td>16/16 Python smoke tests + multi-day depth sweep + save/resume round-trip.</td>
+</tr>
+</tbody>
+</table>
+<p>Decision rule: three of the six items are unsatisfied. The spirit of Gate A
+("at least demonstrably controlled corpus") is <strong>not fully met</strong>, though the
+training stack itself is fully in order.</p>
+<hr />
+<h2 id="5-provenance-loss-at-shard-pack-time">5. Provenance loss at shard-pack time</h2>
+<p>This is the single most consequential gap.</p>
+<p>The plan's §5 calls for every training record to carry <code>source_id</code>,
+<code>publication_date</code>, <code>date_confidence</code>, <code>language</code>, <code>genre</code>, <code>rights</code>,
+<code>source_url</code>, <code>ocr_quality_estimate</code>, <code>content_hash</code>, and several other
+fields. Our shards contain only <code>text</code>.</p>
+<p>Consequences:</p>
+<ol>
+<li>Cannot compute held-out validation loss <strong>by source family</strong> during
+   training (plan §4 eval #1). The per-family breakdown would have to be
+   reconstructed by re-tokenizing held-out deduped JSONL files — possible
+   but it requires parallel tokenizer work during eval.</li>
+<li>Cannot do source-conditioned sampling or weighting adjustments without
+   re-packaging.</li>
+<li>Cannot run the plan's Phase-6 source-grounded synthetic data pipeline,
+   which requires <code>source_packet</code> records with date + source + URL fields.
+   The teacher model trained on these shards will NOT have seen source
+   IDs; even at inference time, there is no way to prompt it with a dated
+   source packet in the shape the plan envisions.</li>
+<li>Downstream distillation (Phase 7) cannot easily attribute teacher
+   generations to the right corpus subset.</li>
+</ol>
+<p>This is fixable by re-packaging with the full schema. On the current 36 GB
+of JSONL → 47 GB cache hardware path, re-packaging would take ~2 hours if
+we simply carry through the existing JSONL fields. The harder part is
+retrofitting a rights audit that fails closed — several hours of coding and
+a corpus re-scan.</p>
+<hr />
+<h2 id="6-corpus-mix-drift">6. Corpus mix drift</h2>
+<p>Plan target vs. actual, laid side-by-side:</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th style="text-align: right;">Plan target</th>
+<th style="text-align: right;">Actual (est.)</th>
+<th>Gap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Books (general + early modern)</td>
+<td style="text-align: right;">40%</td>
+<td style="text-align: right;">~9%</td>
+<td><strong>-31 pp</strong></td>
+</tr>
+<tr>
+<td>Newspapers/periodicals</td>
+<td style="text-align: right;">30%</td>
+<td style="text-align: right;">~56%</td>
+<td><strong>+26 pp</strong></td>
+</tr>
+<tr>
+<td>Legal/government</td>
+<td style="text-align: right;">15%</td>
+<td style="text-align: right;">&lt;1%</td>
+<td><strong>-14 pp</strong></td>
+</tr>
+<tr>
+<td>Science/technical</td>
+<td style="text-align: right;">10%</td>
+<td style="text-align: right;">~48%</td>
+<td><strong>+38 pp</strong></td>
+</tr>
+<tr>
+<td>Misc/eval holdout</td>
+<td style="text-align: right;">5%</td>
+<td style="text-align: right;">0%</td>
+<td>-5 pp</td>
+</tr>
+</tbody>
+</table>
+<p>The model will be biased toward American newspapers and natural-history
+scientific literature. This will show up in:</p>
+<ul>
+<li>Style: more telegraphic newspaper cadence, more botanical-taxonomic
+  register, less Victorian long-form narrative prose.</li>
+<li>Anachronism profile: American 19th-c news coverage carries heavy
+  contemporary commentary on events ~1860–1913; non-US events under-
+  represented.</li>
+<li>Legal register essentially absent (even though Old Bailey and CAP raws
+  exist in modest quantity; CAP wasn't properly downloaded).</li>
+</ul>
+<p>The model may still be a useful proof-of-concept — it just won't match the
+"source-balanced corpus" the plan recommends. Worth being honest about this
+in any downstream model card.</p>
+<hr />
+<h2 id="7-items-the-current-run-can-validate">7. Items the current run CAN validate</h2>
+<p>Despite the gaps, the d22 r=30 run in progress will produce useful
+Phase-2 evidence:</p>
+<ol>
+<li><strong>End-to-end pipeline works at scale</strong> — dataloader, tokenizer,
+   cache, training loop stable at d22 for ≥30 h wall time (as of
+   report), no OOM, no NaN, stable tok/s.</li>
+<li><strong>Baseline loss curve</strong> on a 25 B-token pre-1913 corpus — useful
+   reference even if the mix is skewed.</li>
+<li><strong>Existence proof for 3090 viability at 615 M parameters</strong> — relevant
+   to Phase 5 compute planning (we can now say: "a single 3090 can
+   comfortably train a 615 M model on 18 B tokens in ~13 days without
+   activation checkpointing").</li>
+<li><strong>Held-out perplexity on a single val shard</strong> — limited (no source
+   breakdown) but non-zero signal.</li>
+</ol>
+<p>What it CANNOT validate:</p>
+<ul>
+<li>Source-grounded QA accuracy (no source IDs in training data).</li>
+<li>Anachronism rate vs cutoff (no date-bucket eval was prepared).</li>
+<li>Style-by-source consistency.</li>
+<li>Rights compliance (rights audit never ran).</li>
+</ul>
+<hr />
+<h2 id="8-three-options-going-forward">8. Three options going forward</h2>
+<h3 id="option-a-let-d22-finish-build-phase-0-in-parallel">Option A — Let d22 finish; build Phase 0 in parallel.</h3>
+<p>Pros:</p>
+<ul>
+<li>Don't waste the ~30 h of 3090 time already sunk.</li>
+<li>End up with a real baseline model in 13 days.</li>
+<li>Phase 0 work (registry, rights audit, schema, eval sets) doesn't require
+  the GPU and can proceed entirely on CPU.</li>
+<li>At day 13, we'll have both a baseline AND a cleaned corpus, and can
+  decide whether to kick off a Phase-0-aligned d22 run #2.</li>
+</ul>
+<p>Cons:</p>
+<ul>
+<li>The baseline model cannot be used for source-grounded synthetic data
+  (plan Phase 6) because it never saw source IDs.</li>
+<li>Model card will have to disclose the audit gaps.</li>
+<li>~13 days of 3090 time for a model we know is structurally wrong for
+  the long-term plan.</li>
+</ul>
+<h3 id="option-b-kill-d22-now-do-phase-0-first-re-pack-re-train">Option B — Kill d22 now; do Phase 0 first; re-pack; re-train.</h3>
+<p>Pros:</p>
+<ul>
+<li>The eventual model is aligned with the plan from step zero.</li>
+<li>No awkward disclosures in the model card.</li>
+<li>Phase-6 synthetic data generation works out of the box.</li>
+</ul>
+<p>Cons:</p>
+<ul>
+<li>Sunk 30 h compute is fully wasted.</li>
+<li>Phase 0 is a serious implementation effort — roughly 1–2 weeks of
+  focused work for a single operator (registry + harvesters standardized</li>
+<li>rights audit + date audit + schema + re-pack + eval sets). Training
+  restarts after that.</li>
+<li>Net timeline: Phase-0-aligned model ready in ~28 days vs. ~13 days
+  for Option A's baseline.</li>
+</ul>
+<h3 id="option-c-hybrid-let-d22-finish-as-pipeline-validator-but">Option C — Hybrid: let d22 finish as "pipeline validator," but</h3>
+<p>immediately stand up Phase 0 in parallel for the next run.</p>
+<ul>
+<li>Treat d22 r=30 as a throwaway baseline, not a candidate teacher.</li>
+<li>Build <code>registry.yaml</code>, unified Pydantic schema, rights+date audit,
+  source-labeled shard packer while GPU is busy.</li>
+<li>When d22 finishes (day 13), IMMEDIATELY re-pack the corpus using the
+  new pipeline (few hours) and start the "real" d22 run (or d20 r=40 if
+  data volume drops after rights exclusions).</li>
+<li>Phase-1 eval suite (anachronism, source-grounded QA, style) gets built
+  during the 13-day gap.</li>
+</ul>
+<p>This is probably the right answer: d22 baseline as a free dry-run of the
+full 13-day schedule, while Phase 0 proceeds on CPU.</p>
+<hr />
+<h2 id="9-concrete-next-steps-regardless-of-option">9. Concrete next steps, regardless of option</h2>
+<p>Items that should happen before the <em>next</em> serious run (not during the
+current one), in order of highest leverage first:</p>
+<ol>
+<li><strong>Source registry</strong> (<code>data/sources/registry.yaml</code>) with the 10 sources
+   we already have raws for + 4 P1 stubs from the plan.</li>
+<li><strong>Unified document schema</strong> (Pydantic in <code>data/schemas/</code>) with
+   <code>source_id</code>, <code>document_id</code>, <code>publication_date</code>, <code>date_confidence</code>,
+   <code>rights</code>, <code>rights_url</code>, <code>source_url</code>, <code>cutoff_bucket</code> as required
+   fields.</li>
+<li><strong>Rights audit</strong> (<code>data/process/rights_audit.py</code>) that fails closed.
+   Backfill <code>rights</code> into existing deduped JSONL from the source registry
+   (e.g. Gutenberg → <code>public_domain_us</code>, Old Bailey → <code>public_domain</code>,
+   BHL → <code>open_access</code> with item-level check, American Stories → derived
+   from public-domain Chronicling America, etc.).</li>
+<li><strong>Date audit</strong> (<code>data/process/date_audit.py</code>) with the confidence
+   hierarchy and the cutoff buckets.</li>
+<li><strong>Shard re-packer</strong> that preserves the full schema in parquet (not
+   just <code>text</code>). Output manifest MUST include <code>source_counts</code> with
+   actual per-source token totals.</li>
+<li><strong>Eval holdouts</strong> — split Old Bailey, BHL, one American Stories
+   newspaper title, and one Gutenberg author set into held-out val/eval
+   shards BEFORE shuffling into training.</li>
+<li><strong>Anachronism eval</strong> — at minimum 100 prompts with expected
+   "shouldn't know this" behavior at the 1913 cutoff (WWI, 1918 flu,
+   Wright flight, Einstein relativity, Nazi Germany).</li>
+<li><strong>Source-grounded QA eval</strong> — 500 held-out passages with
+   human-authored or GPT-generated questions + evidence spans.</li>
+</ol>
+<p>Items 1–5 are the ones that block the plan's Phase-6 synthetic-data
+pipeline. Items 6–8 are what give the eventual model card something to
+say about quality.</p>
+<hr />
+<h2 id="10-honest-assessment-for-gpt-pro">10. Honest assessment for GPT Pro</h2>
+<ul>
+<li><strong>The training infrastructure is overbuilt for where the data is.</strong> We
+  have an excellent single-GPU training stack, a principled tokenizer,
+  and a thorough sweep showing d22 fits nicely on 24 GB at 16 k tok/s.
+  What we're training on is a legacy corpus that does not meet the
+  plan's own Phase-0 standards.</li>
+<li><strong>The corpus is usable but not governed.</strong> Enough raw data exists to
+  train a meaningful 615 M model; the records inside the shards have
+  lost their provenance. The downstream plan (synthetic data → student
+  distillation) requires provenance to be preserved through to the
+  training parquet, and ours isn't.</li>
+<li><strong>The currently-running d22 is a pipeline baseline, not a candidate
+  teacher.</strong> That framing is defensible provided the model card says so.</li>
+<li><strong>Option C is the least-regret path.</strong> Let d22 finish, build Phase 0
+  in parallel, then re-train against a governed corpus. Total wall clock
+  to a Phase-0-aligned model: ~26 days (13 d22 + 13 Phase 0) vs. ~28 d
+  for Option B, but Option C gets a baseline checkpoint for free.</li>
+</ul>
+<hr />
+<h2 id="11-numbers-for-gpt-pro-to-scrutinize">11. Numbers for GPT Pro to scrutinize</h2>
+<ul>
+<li>Token cache total: <strong>25.2 B tokens</strong> (uint16 .bin shards).</li>
+<li>Estimated post-Phase-0 clean tokens: <strong>≤20 B</strong> after rights audit
+  (some BHL items may have stricter per-item rights; CAP needs actual
+  re-harvest; American Stories mostly PD).</li>
+<li>Params at d22: 615,645,184.</li>
+<li>Chinchilla ratio 30: 18.47 B tokens = 70,455 steps at 262 k tokens/step.</li>
+<li>Throughput: <strong>16.4 k tok/s measured</strong> (sweep), <strong>16.5 k tok/s observed
+  live</strong> at step 20.</li>
+<li>Peak VRAM d22 DBS=8 no-ckpt compile=default: 17.5 GiB (sweep), waiting
+  for live confirmation at ~step 500.</li>
+<li>3090 BF16 peak FLOPS: ~71 TF/s. MFU at d22: 6.3% ≈ 32 TF/s ≈ <strong>45% of
+  3090 peak</strong>. H100 MFU reference would be the relevant comparison for
+  Phase 5.</li>
+<li>Expected wall for the current run: 70,455 × dt(16 s) ≈ 313 h ≈ 13.0 d.</li>
+</ul>
+<p>Any of these I'd flag as worth sanity-checking: the assumed sample rates
+in §3.4, the "actual (est.)" composition in §6, and the Phase-0-aligned
+clean-token estimate in §11. All three depend on inputs I cannot observe
+directly without re-scanning the 25.2 B-token cache against its source
+JSONLs.</p>
+<hr />
+<p>End of report.</p>
+</body>
+</html>

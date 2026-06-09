@@ -4,6 +4,13 @@
 
 > The best ChatGPT that $100 can buy.
 
+**Historical fork note**: this subtree is vendored inside `historical-nanochat`.
+For the single-GPU 3090 path (d16 @ T=1024, activation checkpointing, chunked
+loss, dedicated run scripts at `historical_3090_{base,mid,eval}.sh`) see
+[`../docs/TRAINING_3090.md`](../docs/TRAINING_3090.md). Upstream behavior
+(FineWeb auto-download + `speedrun.sh`) is preserved when `NANOCHAT_PARQUET_DIR`
+is unset.
+
 This repo is a full-stack implementation of an LLM like ChatGPT in a single, clean, minimal, hackable, dependency-lite codebase. nanochat is designed to run on a single 8XH100 node via scripts like [speedrun.sh](speedrun.sh), that run the entire pipeline start to end. This includes tokenization, pretraining, finetuning, evaluation, inference, and web serving over a simple UI so that you can talk to your own LLM just like ChatGPT. nanochat will become the capstone project of the course LLM101n being developed by Eureka Labs.
 
 ## Talk to it

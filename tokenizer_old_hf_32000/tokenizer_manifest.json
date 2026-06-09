@@ -1,0 +1,56 @@
+{
+  "script_version": "2.0.0",
+  "git_commit": "516934a8f84e8b2971ca233a26b07488dfcc5219",
+  "timestamp": "2026-04-19T13:19:24-0700",
+  "inputs": {
+    "tokenizer_json": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/tokenizer.json",
+    "sha256_tokenizer_json": "e5e9b875f5feb195481c2212f084dd71c359fef3bc4a8eb5d5775a8e934c2da5"
+  },
+  "outputs": {
+    "token_bytes_pt": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/token_bytes.pt",
+    "sha256_token_bytes_pt": "92f59a66e09b1afa25c1fef0f4341db043993bd3dd4cc98d65a9c7d22ca4fb96"
+  },
+  "tokenizer": {
+    "format": "huggingface_bytelevel_bpe",
+    "vocab_size": 32000,
+    "special_tokens": {
+      "[UNK]": 0,
+      "[PAD]": 1,
+      "[BOS]": 2,
+      "[EOS]": 3
+    },
+    "missing_nanochat_specials": [
+      "<|bos|>",
+      "<|user_start|>",
+      "<|user_end|>",
+      "<|assistant_start|>",
+      "<|assistant_end|>",
+      "<|python_start|>",
+      "<|python_end|>",
+      "<|output_start|>",
+      "<|output_end|>"
+    ]
+  },
+  "validation": {
+    "test_strings": 10,
+    "test_string_roundtrip_failures": 0,
+    "special_leak_failures": 0,
+    "unseen_byte_strings": 2,
+    "unk_fallback_failures": 0,
+    "corpus_samples": 300,
+    "corpus_roundtrip_failures": 0
+  },
+  "token_bytes_stats": {
+    "nonzero_count": 31996,
+    "zero_count": 4,
+    "min_nonzero": 1,
+    "max": 64,
+    "mean_nonzero": 5.79325532913208
+  },
+  "pickle_skipped_reason": "This tokenizer's vocab covers only 151 of 256 possible single-byte tokens; the remaining 105 never appeared in the pre-1913 corpus. tiktoken's BPE requires complete byte coverage or it panics at inference. Synthesizing the missing bytes would grow vocab_size beyond 32000 and break id parity with the step-3000 checkpoint. We use HuggingFaceTokenizer directly (get_tokenizer() auto-detects tokenizer.json when tokenizer.pkl is absent).",
+  "notes": [
+    "Token IDs are preserved exactly: we use the same HuggingFaceTokenizer instance that produced the step-3000 checkpoint. No conversion, no renaming, no merges regenerated.",
+    "[BOS] (id=2) is used as the BOS token via HuggingFaceTokenizer.get_bos_token_id's fallback chain (<|bos|> -> <|endoftext|> -> [BOS]). Unchanged by this recovery.",
+    "token_bytes.pt is regenerated from scratch, mirroring scripts/tok_train.py lines 78-87 exactly: specials get 0, ordinary tokens get UTF-8 byte length of decode([id])."
+  ]
+}
