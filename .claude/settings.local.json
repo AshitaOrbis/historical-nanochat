@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "WebSearch",
+      "WebFetch(domain:guides.loc.gov)",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(python3:*)"
+    ]
+  }
+}

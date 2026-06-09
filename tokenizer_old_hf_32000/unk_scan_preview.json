@@ -1,0 +1,105 @@
+{
+  "config": {
+    "shards_dir": "/home/user/historical-nanochat/data/shards",
+    "tokenizer_json": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/tokenizer.json",
+    "sample_every": 1,
+    "max_docs": -1,
+    "max_shards": 10,
+    "high_unk_threshold": 0.01
+  },
+  "totals": {
+    "shards_scanned": 10,
+    "docs_scanned": 1965056,
+    "chars_scanned": 2507720350,
+    "tokens_produced": 752432304,
+    "unk_tokens": 0,
+    "unk_rate_per_token": 0.0,
+    "docs_with_any_unk": 0,
+    "docs_with_high_unk_rate": 0,
+    "elapsed_sec": 163.34
+  },
+  "per_shard": {
+    "shard_00000.parquet": {
+      "docs": 207872,
+      "chars": 250462942,
+      "tokens": 78067478,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00001.parquet": {
+      "docs": 189440,
+      "chars": 251436016,
+      "tokens": 74314849,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00002.parquet": {
+      "docs": 175104,
+      "chars": 250016466,
+      "tokens": 73072418,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00003.parquet": {
+      "docs": 187392,
+      "chars": 250623950,
+      "tokens": 74615674,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00004.parquet": {
+      "docs": 195584,
+      "chars": 250907609,
+      "tokens": 76068403,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00005.parquet": {
+      "docs": 198656,
+      "chars": 251095222,
+      "tokens": 75972544,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00006.parquet": {
+      "docs": 202752,
+      "chars": 251005272,
+      "tokens": 75322461,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00007.parquet": {
+      "docs": 206848,
+      "chars": 251062471,
+      "tokens": 75296577,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00008.parquet": {
+      "docs": 203776,
+      "chars": 250535290,
+      "tokens": 75084726,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    },
+    "shard_00009.parquet": {
+      "docs": 197632,
+      "chars": 250575112,
+      "tokens": 74617174,
+      "unk": 0,
+      "docs_with_unk": 0,
+      "rate": 0.0
+    }
+  },
+  "top_offenders": [],
+  "unk_context_samples": []
+}

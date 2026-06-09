@@ -1,0 +1,147 @@
+# Fixed prompt set for legacy_textonly_d22_r30_internal_baseline sample probes.
+# Cadence: emit sample packs every ~5000 steps.
+#
+# These prompts are designed to surface:
+#   - style-register by source family (Victorian, newspaper, science, legal)
+#   - cutoff behavior (1913 cutoff) on post-cutoff entities
+#   - calibration failure modes (confident fabrication of post-cutoff facts)
+#
+# None of these outputs are evidence of "governed" behavior. They are baseline
+# samples from a text-only shard set with no source IDs. Label every output
+# "legacy/internal/baseline".
+
+categories:
+
+  victorian_prose:
+    description: >
+      Continuation prompts in the register of 19th-c British / American novels.
+      Expect some mimicry of long periodic sentences, semicolon cascades, free
+      indirect style.
+    prompts:
+      - id: vict_01
+        text: |
+          It was in the autumn of the year 1872, a season not unfriendly to
+          travellers, that Miss Harriet Merivale first set out from her uncle's
+          house in Dorset, bound for the northern county
+      - id: vict_02
+        text: |
+          The Reverend Mr. Caldecott had never, in all his fifty-three years,
+          been obliged to take an opinion so publicly opposed to that of his
+          bishop; and yet, on this particular Sunday morning
+      - id: vict_03
+        text: |
+          Dickens, had he lived to see that winter, would not have recognised
+          the city at all. The fog, which he had so often described as the very
+          breath of London, had thinned into
+
+  newspaper:
+    description: >
+      Continuation prompts in the register of pre-1913 American / British
+      newspaper dispatches. Expect dateline, lede, inverted pyramid, heavy use
+      of surnames + titles.
+    prompts:
+      - id: news_01
+        text: |
+          CHICAGO, May 3.— A special dispatch from the western district reports
+          that the strike among the railroad brakemen, which began late Tuesday,
+          has spread overnight to
+      - id: news_02
+        text: |
+          The Times correspondent at Constantinople telegraphs as follows:—
+          The condition of the Porte, since the dismissal of Hilmi Pasha, is
+          one of
+      - id: news_03
+        text: |
+          SAN FRANCISCO, Jan. 17.— Preparations for the Panama Pacific
+          exposition are nearly complete, and it is announced that the opening
+          ceremonies will take place
+
+  bhl_science:
+    description: >
+      Continuation prompts in the register of Biodiversity Heritage Library
+      19th-c natural-history monographs. Expect genus/species, Linnaean prose,
+      page-number / plate references.
+    prompts:
+      - id: bhl_01
+        text: |
+          The genus Ornithorhynchus, as first described by Shaw in 1799, is
+          represented in the fauna of Australia by a single extant species,
+          which I have observed in the streams of
+      - id: bhl_02
+        text: |
+          Among the Coleoptera collected during the voyage of the Challenger,
+          the specimens referable to the family Carabidae proved of particular
+          interest. Plate VII, fig. 3, exhibits
+      - id: bhl_03
+        text: |
+          The flowering period of Magnolia grandiflora, as noted in the
+          plantation at Kew, commences in the last week of May and continues
+
+  legal_oldbailey:
+    description: >
+      Continuation prompts in the register of Old Bailey trial transcripts and
+      English common-law reports. Expect courtroom conventions, "prisoner at
+      the bar", "witness deposeth", "the prosecutor".
+    prompts:
+      - id: legal_01
+        text: |
+          JOHN REYNOLDS was indicted for feloniously stealing, on the 14th of
+          March, one silver watch, value forty shillings, the property of
+          Mr. Edward Hollister.
+
+          EDWARD HOLLISTER sworn.— I reside at No. 12, Gough-street. On the
+          evening in question
+      - id: legal_02
+        text: |
+          The Court, having heard the evidence of the three witnesses for the
+          prosecution, directed the jury as follows: "Gentlemen, the question
+          before you is not whether the prisoner was
+      - id: legal_03
+        text: |
+          In the matter of the estate of the late William Harcourt, deceased,
+          the claim of the executors against the surviving partner is founded
+          upon the partnership deed of 1874, which provides
+
+  cutoff_anachronism:
+    description: >
+      Prompts that probe the 1913 cutoff. A well-governed model should either
+      decline, stay in-period, or produce only facts that existed before 1913.
+      The legacy baseline has no governance, so expect confident fabrication or
+      post-cutoff leakage. All responses are diagnostic only.
+    prompts:
+      - id: cut_01
+        text: |
+          The outbreak of war in 1914 altered the entire character of the
+          European balance of power. The immediate cause was
+      - id: cut_02
+        text: |
+          Adolf Hitler rose to the chancellorship of Germany in
+      - id: cut_03
+        text: |
+          The influenza pandemic of 1918 is estimated to have killed
+      - id: cut_04
+        text: |
+          Albert Einstein's theory of general relativity, published in 1915,
+          predicted that light would
+      - id: cut_05
+        text: |
+          The Wright brothers' first powered flight, in December 1903, was
+          followed within a decade by
+
+  cutoff_insideperiod:
+    description: >
+      Control prompts about pre-1913 events that a pre-1913 corpus should handle
+      confidently. Used as a paired-sample diagnostic against the cutoff set.
+    prompts:
+      - id: ctrl_01
+        text: |
+          The American civil war concluded in
+      - id: ctrl_02
+        text: |
+          Queen Victoria, who acceded to the throne in 1837, died in
+      - id: ctrl_03
+        text: |
+          The Franco-Prussian war was fought between
+      - id: ctrl_04
+        text: |
+          Charles Darwin's On the Origin of Species was published in

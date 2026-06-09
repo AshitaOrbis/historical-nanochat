@@ -7,7 +7,7 @@ from nanochat.common import get_dist_info
 from nanochat.dataset import list_parquet_files
 from nanochat.tokenizer import get_tokenizer
 
-def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None):
+def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None, parquet_dir=None):
     """
     Stream pretraining text from parquet files, tokenize, yield training batches.
 
@@ -25,8 +25,11 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
     # infinite iterator over document batches (list of text strings)
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
     def document_batches():
-        parquet_paths = list_parquet_files()
-        assert len(parquet_paths) != 0, "No dataset parquet files found, did you run dataset.py?"
+        parquet_paths = list_parquet_files(data_dir=parquet_dir)
+        assert len(parquet_paths) != 0, (
+            f"No dataset parquet files found in {parquet_dir or '<NANOCHAT_PARQUET_DIR or <base_dir>/base_data>'}. "
+            "Either run `python -m nanochat.dataset` to download FineWeb, or set NANOCHAT_PARQUET_DIR to your shard directory."
+        )
         parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
         resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
         resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None

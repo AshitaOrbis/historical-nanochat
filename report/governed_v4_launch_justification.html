@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>governed_v4_launch_justification</title>
+<style>
+:root { color-scheme: light dark; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  max-width: 42em; margin: 1.25rem auto; padding: 0 1rem 4rem;
+  line-height: 1.55; font-size: 17px;
+  background: #fff; color: #1b1b1b;
+}
+@media (prefers-color-scheme: dark) {
+  body { background: #111; color: #e4e4e4; }
+  a { color: #7ab7ff; }
+  code, pre { background: #1e1e1e; color: #f0f0f0; }
+  blockquote { border-color: #444; color: #bbb; }
+  table { border-color: #333; }
+  th, td { border-color: #333; }
+  th { background: #1e1e1e; }
+}
+h1, h2, h3, h4 { line-height: 1.2; margin-top: 1.8em; }
+h1 { font-size: 1.7em; border-bottom: 1px solid rgba(128,128,128,0.3); padding-bottom: 0.3em; }
+h2 { font-size: 1.35em; border-bottom: 1px solid rgba(128,128,128,0.2); padding-bottom: 0.2em; }
+h3 { font-size: 1.15em; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+       background: rgba(128,128,128,0.12); padding: 0.1em 0.35em; border-radius: 4px;
+       font-size: 0.92em; }
+pre { background: rgba(128,128,128,0.12); padding: 0.9em 1em; border-radius: 6px;
+      overflow-x: auto; font-size: 0.9em; }
+pre code { background: transparent; padding: 0; }
+blockquote { border-left: 4px solid #ccc; margin: 1em 0; padding: 0.2em 1em; color: #555; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.95em; }
+th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; text-align: left; vertical-align: top; }
+th { background: #f5f5f5; }
+img { max-width: 100%; height: auto; }
+hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 2em 0; }
+ul, ol { padding-left: 1.5em; }
+a { color: #0366d6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1 id="governed-v4-d22-r30-3090-poc-launch-justification">Governed v4 d22 r30 3090 PoC — Launch Justification</h1>
+<h2 id="run">Run</h2>
+<p><strong><code>governed_corpus1913_v4_d22_r30_3090_poc_parallel_family</code></strong></p>
+<ul>
+<li>Launched: 2026-04-24 17:40 UTC</li>
+<li>Host: requiem (NVIDIA RTX 3090, 24 GB)</li>
+<li>Scope: isolated systemd user scope <code>governed_v4_d22_r30_parallel_family.scope</code> under <code>compute.slice</code></li>
+<li>Expected wall time: ~13 days (70,455 steps × ~16 s/step)</li>
+<li>Full launch record (git commit, SHAs, config): <code>report/governed_v4_long_launch_record.json</code></li>
+</ul>
+<h2 id="why-this-run-in-one-paragraph">Why this run — in one paragraph</h2>
+<p>We have a governed, provenance-preserving pre-1914 training corpus that meets every hard source-family floor (newspapers ≤50%, books ≥10%, legal ≥5%, science ≥5%, early_modern &gt;0%). Four GPU smokes established that the <strong>mechanical pipeline is sound</strong> and identified the exact failure mode of a naive cached dataloader on diverse data. The fourth smoke, with a family-balanced dataloader, produced the first v4 run with <strong>monotone multi-checkpoint validation descent</strong>. This launch is the first training run that can honestly be called a governed 3090 proof-of-concept candidate.</p>
+<hr />
+<h2 id="what-changed-from-the-legacy-baseline">What changed from the legacy baseline</h2>
+<p>The legacy run (<code>legacy_textonly_d22_r30_internal_baseline</code>) was a useful training-stack validator but not a governed model. It trained on 25 B tokens of text-only shards that dropped source/date/rights metadata at pack time. Its source mix was ~95% American newspapers.</p>
+<p>The v4 corpus is a different artifact:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>legacy</th>
+<th>v4 governed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>source-level rights audit</td>
+<td>none</td>
+<td>item-level for BHL; collection-policy for TCP; derived-dataset for CAP; registry for remainder</td>
+</tr>
+<tr>
+<td>date cutoff enforcement</td>
+<td>implicit</td>
+<td>explicit ≤ 1913 with confidence hierarchy</td>
+</tr>
+<tr>
+<td>parquet schema</td>
+<td><code>{text}</code> only</td>
+<td><code>{text, source_id, document_id, date_bucket, rights_class, publication_year, split, ...}</code></td>
+</tr>
+<tr>
+<td>science_technical share</td>
+<td>effectively 0% (BHL dropped)</td>
+<td>26.9% (BHL item-level recovery)</td>
+</tr>
+<tr>
+<td>books_general share</td>
+<td>1.7% (Gutenberg only)</td>
+<td>17.5% (BL Books CC0 + Gutenberg)</td>
+</tr>
+<tr>
+<td>legal_government share</td>
+<td>0.18% (Old Bailey only)</td>
+<td>8.2% (CAP reharvest + Old Bailey)</td>
+</tr>
+<tr>
+<td>early_modern share</td>
+<td>3.1% (EEBO only)</td>
+<td>9.8% (EEBO + TCP subset policy)</td>
+</tr>
+<tr>
+<td>newspapers_periodicals share</td>
+<td>94.97%</td>
+<td>37.7%</td>
+</tr>
+<tr>
+<td>total train tokens</td>
+<td>25 B</td>
+<td>19.12 B</td>
+</tr>
+<tr>
+<td>held-out val</td>
+<td>last shard of train</td>
+<td>separate 2.86 B val split, source-stratified</td>
+</tr>
+</tbody>
+</table>
+<p>The v4 corpus is substantially more balanced; every source admission is auditable back to an item, subset, or collection policy.</p>
+<hr />
+<h2 id="the-training-dynamics-problem-and-how-we-solved-it">The training-dynamics problem and how we solved it</h2>
+<h3 id="smoke-1-sequential-cache-legacy-lr">Smoke 1 — sequential cache, legacy LR</h3>
+<p>Ran d22 / 200 steps / original v4 cache / legacy LR. Train loss descended cleanly while the dataloader stayed on one shard (steps 0-70: loss 10.4 → 3.97). <strong>When the shard flipped at step 80 from legal to newspapers, loss spiked to 6.01 and did not recover before warmdown.</strong> The cached dataloader was reading each 15 M-token shard end-to-end, meaning ~50-60 consecutive steps of one family, then a sudden distribution flip.</p>
+<p>Mechanical pass, dynamics fail.</p>
+<h3 id="smoke-2-sequential-cache-softened-lr">Smoke 2 — sequential cache, softened LR</h3>
+<p>Same setup with LR reduced ~33% (embedding 0.20, matrix 0.015, unembedding 0.003, warmup 0.02). The same shard-flip spike appeared at the same step. LR softening alone did not fix the root cause.</p>
+<p>Mechanical pass, dynamics fail.</p>
+<h3 id="smoke-3-split-shards-softened-lr">Smoke 3 — split shards, softened LR</h3>
+<p>Split every large <code>.bin</code> shard to ≤2 M tokens (3,125 shards → 18,926 sub-shards; 90 val → 2,881 val sub-shards). Re-shuffled manifests. The dataloader now switches shards every 3-6 steps instead of every 50-60.</p>
+<p>Initial descent happened (step 0-50), but val BPB <strong>plateaued at 2.23-2.27</strong> across steps 100/200/300 with no further improvement. Training loss was noisy around 5.5-6.5 with no net progress. Root cause: each sub-shard gave only 4 gradient updates before flipping to a new family, and per-shard gradients partially undid each other. The model converged to a "generalist floor" without specializing.</p>
+<p>Mechanical pass, dynamics fail (different failure mode than smokes 1-2).</p>
+<h3 id="smoke-4-parallel_family_cache-the-decisive-experiment">Smoke 4 — parallel_family_cache — the decisive experiment</h3>
+<p>Kept the split shards. Wrote a new cached dataloader that <strong>maintains one sequential cursor per source family</strong> and serves microbatches according to a fixed per-step schedule:</p>
+<pre><code>newspapers_periodicals: 12 microbatches per optimizer step
+science_technical:       8
+books_general:           6
+legal_government:        3
+early_modern:            3
+                        ---
+                        32 microbatches (grad_accum_steps)
+</code></pre>
+<p>Every optimizer step now computes its gradient from a fixed 37.5%/25%/18.75%/9.375%/9.375% family mix. No more within-step homogeneity. No more shard-flip spikes (there are no shard flips per-step — families are drawn in parallel).</p>
+<p>Result:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">step</th>
+<th style="text-align: right;">train loss EMA</th>
+<th style="text-align: right;">val BPB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">50</td>
+<td style="text-align: right;">4.94</td>
+<td style="text-align: right;">2.2387</td>
+</tr>
+<tr>
+<td style="text-align: right;">100</td>
+<td style="text-align: right;">4.49</td>
+<td style="text-align: right;">2.2096</td>
+</tr>
+<tr>
+<td style="text-align: right;">150</td>
+<td style="text-align: right;">4.14</td>
+<td style="text-align: right;">1.9912</td>
+</tr>
+<tr>
+<td style="text-align: right;">200</td>
+<td style="text-align: right;">~4.0</td>
+<td style="text-align: right;"><strong>1.9475</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Monotone descent across all four checkpoints</strong> — the first v4 smoke where every eval point is lower than the previous. Contrast with smoke 3 which plateaued at ~2.23 across the same span.</p>
+<p>Mechanical checks: all 12 pass (no OOM/NaN/compile issue, loader 0.21%, tok/s 16,361 = -0.08% of legacy baseline, peak VRAM 17.13 GiB identical to legacy, state-dict sha256 round-trips on both saved checkpoints).</p>
+<p><strong>Smoke 4 is the evidence that justifies launching the long run.</strong></p>
+<hr />
+<h2 id="head-to-head-smoke-comparison">Head-to-head smoke comparison</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>cache granularity</th>
+<th>loader strategy</th>
+<th style="text-align: right;">step-100 train</th>
+<th style="text-align: right;">step-200 val trajectory</th>
+<th>verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>smoke 1</td>
+<td>unsplit (15 M/shard)</td>
+<td>sequential</td>
+<td style="text-align: right;">6.01 (post-spike)</td>
+<td style="text-align: right;">1.60 → 1.84 → 1.69 → 1.63 (oscillating)</td>
+<td>dynamics FAIL</td>
+</tr>
+<tr>
+<td>smoke 2</td>
+<td>unsplit</td>
+<td>sequential</td>
+<td style="text-align: right;">6.06 (post-spike)</td>
+<td style="text-align: right;">— (stopped early)</td>
+<td>dynamics FAIL</td>
+</tr>
+<tr>
+<td>smoke 3</td>
+<td>split (1 M/shard)</td>
+<td>sequential</td>
+<td style="text-align: right;">6.27</td>
+<td style="text-align: right;">2.23 → 2.27 → 2.23 (plateau)</td>
+<td>dynamics FAIL</td>
+</tr>
+<tr>
+<td><strong>smoke 4</strong></td>
+<td><strong>split (1 M/shard)</strong></td>
+<td><strong>parallel_family</strong></td>
+<td style="text-align: right;"><strong>4.49</strong></td>
+<td style="text-align: right;"><strong>2.24 → 2.21 → 1.99 → 1.95 (monotone)</strong></td>
+<td><strong>PASS</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="the-launched-long-run-configuration">The launched long-run configuration</h2>
+<p>Everything below matches smoke 4 except the iteration count (now 70,455 for the real Chinchilla-ratio=30 budget) and the cadence flags (save every 2k, val every 1k, sample every 5k).</p>
+<pre><code>depth:                        22
+params:                       615,645,184
+max_seq_len:                  1024
+device_batch_size:            8
+total_batch_size:             262,144 tokens/step
+target_param_data_ratio:      30 (Chinchilla)
+num_iterations:               70,455 (derived)
+total_tokens:                 18,469,355,520
+compile_mode:                 default (bfloat16 autocast)
+sdpa_backend:                 auto
+activation_checkpoint:        off
+chunked_loss:                 True, chunk 1024
+
+loader_strategy:              parallel_family_cache
+token_cache_train_dir:        token_cache_v4_balanced_candidate/train  (3125 -&gt; 18926 split shards, shuffled seed=11)
+token_cache_val_dir:          token_cache_v4_balanced_candidate/val    (90   -&gt; 2881  split shards, shuffled seed=11)
+provenance_index:             provenance.json (per-shard source_id + family)
+
+warmup_ratio:                 0.02   (warmup ends at step 1409)
+warmdown_ratio:               0.4    (warmdown starts at step 42273)
+peak LR duration:             40,864 steps
+embedding_lr:                 0.20   (legacy was 0.30)
+matrix_lr:                    0.015  (legacy was 0.020)
+unembedding_lr:               0.003  (legacy was 0.004)
+
+save_every:                   2000
+eval_every:                   1000
+eval_tokens:                  262,144
+core_metric_every:            -1 (disabled during training; post-train only)
+sample_every:                 5000
+
+diagnostic_logging:           on (raw/EMA loss, grad norm, param norm, per-group LR,
+                                 NaN/inf detection, current-microbatch family, family cursors)
+</code></pre>
+<hr />
+<h2 id="stop-gates">Stop-gates</h2>
+<p>The run will be halted if any of these gates fail. Each gate reviews the usual metrics plus the family-balance signal from the loader.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">step</th>
+<th>criterion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">500</td>
+<td>no OOM/NaN/inf; family mix matches schedule; train EMA not exploding; val BPB not sharply worse than step 0</td>
+</tr>
+<tr>
+<td style="text-align: right;">2000</td>
+<td>first checkpoint save/reload sha-verified; train EMA clearly below early-run baseline; val BPB meaningfully below step 0</td>
+</tr>
+<tr>
+<td style="text-align: right;">5000</td>
+<td>train EMA continues downward; val BPB continues downward; ≥ 4/5 source-family val slices improve</td>
+</tr>
+<tr>
+<td style="text-align: right;">10000</td>
+<td>progress remains visible; no family persistently harmed by sampling bug; checkpoint/resume reliable</td>
+</tr>
+<tr>
+<td style="text-align: right;">20000</td>
+<td>val BPB still learning; samples not dominated by one family</td>
+</tr>
+<tr>
+<td style="text-align: right;">42000</td>
+<td>warmdown-entry review; run healthy; val BPB improving or stable</td>
+</tr>
+<tr>
+<td style="text-align: right;">completion</td>
+<td>run full eval battery</td>
+</tr>
+</tbody>
+</table>
+<p>If a gate fails, the fallback order is: (1) adjust LR one bracket, (2) adjust warmup_ratio, (3) adjust family schedule, (4) consider a smaller model.</p>
+<hr />
+<h2 id="crash-hardening-in-effect">Crash-hardening in effect</h2>
+<p>Learned from the 2026-04-21 OOM cascade postmortem (<code>report/crash_2026-04-21_oom_cgroup_postmortem.md</code>):</p>
+<ul>
+<li>Training runs in its own systemd scope under <code>compute.slice</code>. CPU corpus jobs run under <code>background.slice</code>. A cgroup-wide OOM in one scope cannot cascade to another.</li>
+<li><code>OOMPolicy=continue</code> per scope — OOM kill targets the offending process only, not the whole scope.</li>
+<li>ShardWriter now enforces <code>max_buffer_bytes=500 MB</code> so no long-text repacker can grow to 57 GB RAM again.</li>
+<li>All CPU corpus jobs (audit, repack, reharvest, tokenize, split, shuffle) finished before this launch.</li>
+<li>Disk: 1.8 TB NVMe, ~350 GB free; sufficient for 13 d of checkpoints + bench CSVs.</li>
+</ul>
+<hr />
+<h2 id="what-this-run-will-produce">What this run will produce</h2>
+<ul>
+<li>One checkpoint every 2,000 steps (<code>base_checkpoints/governed_v4_d22_r30_parallel_family/</code>).</li>
+<li>Val BPB data point every 1,000 steps — enough to interpolate the learning curve.</li>
+<li>One sample probe every 5,000 steps (labeled <code>governed_v4</code>, not <code>legacy/internal/baseline</code>).</li>
+<li>Full benchmark CSV (tok/sec, dt, peak VRAM, loader wait, MFU).</li>
+<li>Per-step diagnostic log: grad norm, param norm, update-to-param ratio, NaN/inf counter, current microbatch family.</li>
+</ul>
+<p>At completion, post-training eval battery runs:</p>
+<ol>
+<li>held-out BPB by source family (separate val slices)</li>
+<li>cutoff / anachronism eval</li>
+<li>source-grounded QA eval</li>
+<li>style-by-source continuation eval</li>
+<li>synthetic-data pilot (the whole point of preserving provenance in parquet)</li>
+<li>model card + run card</li>
+</ol>
+<hr />
+<h2 id="artifacts-index">Artifacts index</h2>
+<table>
+<thead>
+<tr>
+<th>file</th>
+<th>what it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>report/governed_v4_long_launch_record.json</code></td>
+<td>SHAs, git commit, full config, LR schedule, stop-gate definitions</td>
+</tr>
+<tr>
+<td><code>report/v4_smoke4_stage1_result.md</code></td>
+<td>Stage 1 (smoke 4) mechanical pass report</td>
+</tr>
+<tr>
+<td><code>report/v4_smoke_series_report.md</code></td>
+<td>Three-smoke comparative report (smokes 1-3)</td>
+</tr>
+<tr>
+<td><code>report/v4_smoke_result.md</code></td>
+<td>Smoke 1 standalone report</td>
+</tr>
+<tr>
+<td><code>report/crash_2026-04-21_oom_cgroup_postmortem.md</code></td>
+<td>OOM/cgroup crash postmortem; crash-hardening rules</td>
+</tr>
+<tr>
+<td><code>report/governed_corpus_recovery_plan_2026-04-21.md</code></td>
+<td>Five-scenario source-mix projection; rationale for v4 recovery work</td>
+</tr>
+<tr>
+<td><code>data/processed/corpus_1913_v4_balanced_candidate/manifest.json</code></td>
+<td>Canonical corpus manifest</td>
+</tr>
+<tr>
+<td><code>data/processed/corpus_1913_v4_balanced_candidate/reports/source_mix.md</code></td>
+<td>Final actual source mix</td>
+</tr>
+<tr>
+<td><code>data/token_cache_v4_balanced_candidate/provenance.json</code></td>
+<td>Per-shard family + source mapping used by the loader</td>
+</tr>
+<tr>
+<td><code>nanochat/nanochat/dataloader_cached.py</code></td>
+<td><code>parallel_family_cache</code> loader implementation</td>
+</tr>
+<tr>
+<td><code>nanochat/tests/test_family_loader.py</code></td>
+<td>Unit tests (5/5 pass): schedule correctness, cursor advance, deterministic resume, provenance guard, schedule-mismatch guard</td>
+</tr>
+<tr>
+<td><code>logs/phase0/governed_v4_d22_r30_parallel_family.log</code></td>
+<td>live training log</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="honest-caveats">Honest caveats</h2>
+<ul>
+<li>The corpus is soft-cap-over by a small margin: science_technical actual 26.9% vs preferred ≤25% ceiling, early_modern actual 9.78% vs preferred ≤7% ceiling. All hard floors are satisfied. The model card will disclose both.</li>
+<li>The family schedule (12/8/6/3/3) is close to but not identical to the global token mix (37.7 / 26.9 / 17.5 / 8.2 / 9.8). Close enough that the effective training distribution is within rounding of the corpus; exact cross-family weight is not a guaranteed invariant of this loader.</li>
+<li>200 training steps are not a conclusive predictor of 70,500-step behavior. The run is gated precisely because smokes can only verify pipeline correctness and early-phase dynamics, not full-training generalization.</li>
+<li>Legacy <code>d22_r30</code> step-4000 checkpoint remains preserved as the fallback path if this run fails a gate catastrophically.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "run_name": "governed_v4_smoke2_d22_softlr_pre_poc",
+  "parent_corpus_name": "corpus_1913_v4_balanced_candidate",
+  "parent_cache_name": "token_cache_v4_balanced_candidate",
+  "launch_utc": "2026-04-24T11:12:03.363113Z",
+  "hostname": "requiem",
+  "gpu": "NVIDIA GeForce RTX 3090, 1616 MiB, 24576 MiB, 590.48.01",
+  "git_commit": "516934a8f84e8b2971ca233a26b07488dfcc5219",
+  "tokenizer_pkl_sha": "f4ab5cefc176723b19efe900b48b43ab4ef8946d0aedbe8f7736d9b306144b39",
+  "token_cache_train_manifest_sha": "f88f799671469ec9ebec07b13088b4fa17b92cfdd528ab584475875bd2f4fe26",
+  "token_cache_val_manifest_sha": "2d42136598e57717842ebd7920aee075721b7d6d23a4365a26e2912aa37fc400",
+  "corpus_manifest_sha": "5d4347b2b5bfc45e70a18aaeeaab6acd7c4ce28b2fd4cdb5031f487acb1b1814",
+  "changes_from_smoke1": {
+    "warmup_ratio": "0.0 -> 0.02",
+    "embedding_lr": "0.30 -> 0.20",
+    "matrix_lr": "0.020 -> 0.015",
+    "unembedding_lr": "0.004 -> 0.003",
+    "num_iterations": "200 -> 70500 (matches long run; keeps LR schedule shape)",
+    "max_steps": "new flag: stop after 400 measured steps",
+    "diagnostic_logging": "enabled: grad norm, param norm, per-group LR, shard provenance"
+  },
+  "lr_schedule_long_run": {
+    "num_iterations": 70500,
+    "warmup_end_step": 1410,
+    "peak_lr_start_step": 1410,
+    "peak_lr_end_step": 42300,
+    "warmdown_start_step": 42300,
+    "peak_lr_duration_steps": 40890
+  },
+  "smoke_window": {
+    "max_steps": 400,
+    "warmup_in_smoke_steps": 1410,
+    "peak_lr_within_smoke_steps": -1010,
+    "warmdown_triggered_in_smoke": false
+  },
+  "isolated_scope": "v4_smoke2_d22.scope @ compute.slice"
+}

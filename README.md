@@ -52,22 +52,43 @@ python -m data.download.caselaw_download --cutoff 1913 --max-cases 500
 ### 2. Package into Shards
 
 ```bash
-# Combine sources and package into nanochat shards
+# Streaming packager with bounded-memory shuffle + per-shard manifest
 python -m data.process.shard_packager \
-    --input data/raw/gutenberg/gutenberg_1913.jsonl \
-            data/raw/oldbailey/oldbailey_1913.jsonl \
-            data/raw/chronicling_america/newspapers_1913.jsonl \
+    --data-dir data/raw \
     --output-dir data/processed/shards_1913 \
-    --cutoff 1913
+    --cutoff 1913 \
+    --check-contamination
 ```
 
-### 3. Train with Nanochat
+The output directory gets a `manifest.json` with per-shard doc/char counts and
+per-source distributions. Use `--input <files...>` instead of `--data-dir` to
+target specific JSONL files, `--max-tokens` to cap corpus size, or `--no-sample`
+to disable per-source downsampling.
+
+### 3. Train on a single RTX 3090
 
 ```bash
-# Point nanochat to historical shards
-export NANOCHAT_BASE_DIR="./data/processed/shards_1913"
+# Point training at the historical shards directly — no base_data/ wrapper needed.
+export NANOCHAT_PARQUET_DIR="$(pwd)/data/processed/shards_1913"
 
-# Run nanochat training
+# Base pretraining (defaults: d16, T=1024, activation ckpt + chunked loss on)
+cd nanochat
+bash historical_3090_base.sh
+
+# Midtraining (structured tasks mixture)
+MODEL_TAG=d16_3090 bash historical_3090_mid.sh
+
+# Evaluation (CORE metric)
+MODEL_TAG=d16_3090 bash historical_3090_eval.sh
+```
+
+See [`docs/TRAINING_3090.md`](docs/TRAINING_3090.md) for the full knob reference,
+benchmark methodology, and recommended 1-week vs 2-week presets.
+
+### Original 8xH100 path
+
+```bash
+# Legacy path: FineWeb auto-download + speedrun. Still works when NANOCHAT_PARQUET_DIR is unset.
 cd nanochat
 bash speedrun.sh
 ```
@@ -131,9 +152,14 @@ historical-nanochat/
 
 | Hardware | Config | Time | Cost |
 |----------|--------|------|------|
-| RTX 3090 | d20, reduced batch | ~2-3 weeks | Electricity |
+| RTX 3090 (24 GB) | **d16, T=1024, ckpt+chunked** (recommended) | ~1–2 weeks | Electricity |
+| RTX 3090 (24 GB) | d20, T=2048 (tight, not recommended) | ~2-3 weeks | Electricity |
 | 8xH100 (Lambda) | d20-d26 | 4-12 hours | ~$100-300 |
 | 8xH100 (Lambda) | d34 | ~40 hours | ~$1000+ |
+
+**3090 notes**: pass `--activation_checkpoint --chunked_loss --max_seq_len=1024`
+(the 3090 scripts do this automatically). If you OOM, drop `--device_batch_size`
+to 2, or set `KV_HEAD_RATIO=0.5` to enable GQA. See `docs/TRAINING_3090.md`.
 
 ## Research Questions
 

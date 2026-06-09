@@ -1,0 +1,64 @@
+## Base model training
+timestamp: 2026-05-10 17:44:13
+
+- run: governed_corpus1913_v4_d22_r30_3090_poc_parallel_family_run3_resume10000
+- device_type: 
+- depth: 22
+- aspect_ratio: 64
+- head_dim: 128
+- max_seq_len: 1024
+- kv_head_ratio: 1.0000
+- num_iterations: -1
+- target_flops: -1.0000
+- target_param_data_ratio: 30
+- device_batch_size: 8
+- total_batch_size: 262,144
+- embedding_lr: 0.2000
+- unembedding_lr: 0.0030
+- weight_decay: 0.0000
+- matrix_lr: 0.0150
+- adam_beta1: 0.8000
+- adam_beta2: 0.9500
+- warmup_ratio: 0.0200
+- warmdown_ratio: 0.4000
+- max_steps: -1
+- diagnostic_logging: True
+- final_lr_frac: 0.0000
+- resume_from_step: 10,000
+- activation_checkpoint: False
+- ckpt_every_n_blocks: 1
+- chunked_loss: True
+- loss_chunk_size: 1024
+- compile_mode: default
+- sdpa_backend: auto
+- seq_len_late: -1
+- seq_len_late_frac: 0.8000
+- parquet_dir: None
+- token_cache_dir: /home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/train
+- val_cache_dir: /home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/val
+- loader_strategy: parallel_family_cache
+- eval_every: 1000
+- eval_tokens: 262,144
+- core_metric_every: -1
+- core_metric_max_per_task: 500
+- sample_every: 5000
+- save_every: 2000
+- benchmark_csv: /home/user/claudeworkspace/research/historical-nanochat/logs/phase0/governed_v4_d22_r30_parallel_family_run3_resume10000_bench.csv
+- model_tag: governed_v4_d22_r30_parallel_family
+- Number of parameters: 615,645,184
+- Number of FLOPs per token: 3.797680e+09
+- Calculated number of iterations: 70,455
+- Number of training tokens: 18,469,355,520
+- Tokens : Params ratio: 30.0000
+- DDP world size: 1
+- warmup_ratio: 0.0200
+- warmdown_ratio: 0.4000
+- final_lr_frac: 0.0000
+- Minimum validation bpb: 1.1092
+- Final validation bpb: 1.1092
+- CORE metric estimate: None
+- MFU %: 4.84%
+- Total training flops: 7.014070e+19
+- Total training time: 20309.25m
+- Peak memory usage: 17541.27MiB
+

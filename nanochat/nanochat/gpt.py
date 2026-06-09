@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as torch_checkpoint
 
 from nanochat.common import get_dist_info, print0
 from nanochat.muon import Muon, DistMuon
@@ -136,6 +137,13 @@ class GPT(nn.Module):
     def __init__(self, config, pad_vocab_size_to=64):
         super().__init__()
         self.config = config
+        # Memory knobs (toggled at runtime from training scripts). These are kept as
+        # plain attributes (not GPTConfig fields) so saved configs remain portable.
+        self.use_activation_checkpoint = False  # set by training script
+        self.checkpoint_every_n_blocks = 1      # 1 = checkpoint every block
+        self.use_chunked_loss = False           # set by training script
+        self.loss_chunk_size = 1024             # tokens per CE chunk (flattened B*T)
+        self.fused_linear_ce = None             # optional callable(hidden, weight, targets, ...) -> loss
         # For DDP, we want vocab_size divisible by world_size. Also, there are potential performance benefits, see:
         # https://huggingface.co/docs/transformers/main_classes/model#transformers.PreTrainedModel.resize_token_embeddings
         padded_vocab_size = ((config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to) * pad_vocab_size_to
@@ -288,9 +296,29 @@ class GPT(nn.Module):
         # Forward the trunk of the Transformer
         x = self.transformer.wte(idx)
         x = norm(x)
-        for block in self.transformer.h:
-            x = block(x, cos_sin, kv_cache)
+        # Activation checkpointing: only at training time and only when no KV cache
+        # (KV-cache inference mutates cache state, which checkpoint's re-forward would corrupt).
+        use_ckpt = (
+            self.use_activation_checkpoint
+            and self.training
+            and kv_cache is None
+            and torch.is_grad_enabled()
+        )
+        for i, block in enumerate(self.transformer.h):
+            if use_ckpt and (i % max(1, self.checkpoint_every_n_blocks) == 0):
+                x = torch_checkpoint.checkpoint(
+                    block, x, cos_sin, kv_cache, use_reentrant=False
+                )
+            else:
+                x = block(x, cos_sin, kv_cache)
         x = norm(x)
+
+        # Chunked loss path: skip materializing the full (B, T, V) logits tensor.
+        # Gated on `self.training` because the chunked path trades throughput for peak
+        # VRAM savings that only matter when backward is live; under eval/inference
+        # there's no activation memory to save, so pay the full-logits path's speed win.
+        if targets is not None and self.use_chunked_loss and self.training and torch.is_grad_enabled():
+            return self._chunked_loss(x, targets, loss_reduction)
 
         # Forward the lm_head (compute logits)
         softcap = 15 # smoothly cap the logits to the range [-softcap, softcap]
@@ -301,12 +329,94 @@ class GPT(nn.Module):
 
         if targets is not None:
             # training: given the targets, compute and return the loss
-            # TODO experiment with chunked cross-entropy?
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
             return loss
         else:
             # inference: just return the logits directly
             return logits
+
+    def _chunked_loss(self, hidden, targets, loss_reduction, softcap=15.0):
+        """
+        Memory-efficient cross-entropy over chunks of flattened hidden states.
+        Matches the default forward path numerically (to within fp32 CE tolerances):
+            - applies the same tanh softcap as the full-logits path
+            - respects ignore_index=-1
+            - supports loss_reduction in {'mean', 'sum', 'none'}
+
+        Trades peak memory for a small amount of extra compute (the lm_head is
+        called once per chunk instead of once). Peak savings come from never
+        materializing the full (B*T, padded_vocab) logits tensor in fp32.
+        """
+        B, T, C = hidden.shape
+        vocab_size = self.config.vocab_size
+        hidden_flat = hidden.view(B * T, C)
+        targets_flat = targets.view(B * T)
+
+        # Optional fused linear cross-entropy kernel (e.g. Liger). When provided it is
+        # expected to consume (hidden_flat, lm_head.weight[:vocab_size], targets_flat, ignore_index, softcap)
+        # and return an already-reduced loss per loss_reduction. Fall back on pure PyTorch otherwise.
+        if self.fused_linear_ce is not None:
+            try:
+                return self.fused_linear_ce(
+                    hidden_flat,
+                    self.lm_head.weight[:vocab_size],
+                    targets_flat,
+                    ignore_index=-1,
+                    softcap=softcap,
+                    reduction=loss_reduction,
+                )
+            except Exception as e:  # fall through to the pure implementation
+                print0(f"fused_linear_ce failed ({e}); falling back to pure PyTorch chunked CE")
+                self.fused_linear_ce = None
+
+        chunk = max(1, int(self.loss_chunk_size))
+        device = hidden.device
+        if loss_reduction == 'none':
+            per_token = torch.empty(B * T, dtype=torch.float32, device=device)
+        else:
+            loss_sum = torch.zeros((), dtype=torch.float32, device=device)
+            count = torch.zeros((), dtype=torch.float32, device=device)
+
+        # lm_head is a plain nn.Linear; calling F.linear on a slice of its weight keeps
+        # autograd intact and avoids allocating the full padded-vocab logits tensor.
+        weight = self.lm_head.weight  # (padded_vocab, C)
+        weight_trim = weight[:vocab_size]
+
+        for start in range(0, B * T, chunk):
+            end = min(B * T, start + chunk)
+            h_chunk = hidden_flat[start:end]
+            t_chunk = targets_flat[start:end]
+            logits_chunk = F.linear(h_chunk, weight_trim)  # (chunk, vocab_size)
+            logits_chunk = logits_chunk.float()
+            logits_chunk = softcap * torch.tanh(logits_chunk / softcap)
+            if loss_reduction == 'none':
+                per_token[start:end] = F.cross_entropy(
+                    logits_chunk, t_chunk, ignore_index=-1, reduction='none'
+                )
+            else:
+                # Use 'sum' per chunk and aggregate; we'll divide by valid-target count
+                # at the end to get the same result as reduction='mean' over the full batch.
+                valid = (t_chunk != -1)
+                loss_sum = loss_sum + F.cross_entropy(
+                    logits_chunk, t_chunk, ignore_index=-1, reduction='sum'
+                )
+                count = count + valid.sum().float()
+
+        if loss_reduction == 'none':
+            # Match the baseline path which flattens logits and targets before CE,
+            # so reduction='none' returns a (B*T,) tensor. Callers like loss_eval.py
+            # immediately .view(-1), so shape parity matters for drop-in replacement.
+            return per_token
+        if loss_reduction == 'sum':
+            return loss_sum
+        # 'mean': divide by number of non-ignored targets. This intentionally diverges
+        # from F.cross_entropy's mean reduction in one edge case: when every target is
+        # ignore_index, F.cross_entropy returns NaN (0/0); we return 0.0 via the
+        # clamp(min=1.0). That's a deliberate safety: an all-ignored micro-batch is
+        # otherwise pathological and the NaN would poison the EMA training-loss logger
+        # for the rest of the run. Callers that need strict F.cross_entropy semantics
+        # (e.g. numerical-parity tests) should set use_chunked_loss=False.
+        return loss_sum / count.clamp(min=1.0)
 
     @torch.inference_mode()
     def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):

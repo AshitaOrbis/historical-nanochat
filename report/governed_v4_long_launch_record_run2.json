@@ -1,0 +1,26 @@
+{
+  "run_name": "governed_corpus1913_v4_d22_r30_3090_poc_parallel_family",
+  "attempt": "run #2 (run #1 discarded due to stale-provenance bug; see governed_v4_run1_provenance_bug_postmortem.md)",
+  "launch_utc": "2026-04-26T15:31:27.401719Z",
+  "git_commit": "516934a8f84e8b2971ca233a26b07488dfcc5219",
+  "token_cache_train_manifest_sha": "d09dc6d91cede4b0897351dc5521a15a41dcdea8783eecdbeccc2e5440adeba8",
+  "token_cache_val_manifest_sha": "a1cb2c2449c172a062eed963fb12b7b3c51d6da5ce1711da7280df623f98ba19",
+  "token_cache_provenance_sha_REGENERATED": "55ffa71c30b54f0f270b6b0ccec53b6d7b18c39dde2ac2d2748c465abf4d91d2",
+  "corpus_manifest_sha": "5d4347b2b5bfc45e70a18aaeeaab6acd7c4ce28b2fd4cdb5031f487acb1b1814",
+  "tokenizer_pkl_sha": "f4ab5cefc176723b19efe900b48b43ab4ef8946d0aedbe8f7736d9b306144b39",
+  "previous_attempt_sha_provenance_BROKEN": "2046f30210f7492c40daf3162bf85284488c45b41b56a80e5ada59d2c86d99c6",
+  "changes_from_run1": [
+    "provenance.json regenerated to cover all 18,926 train + 2,881 val shards (was 3,125 + 90 stale entries)",
+    "dataloader_cached._load_family_shard_lists now refuses to start if coverage<95% or family-mismatch>5%",
+    "unit tests retained; full cache now visible to family loader"
+  ],
+  "config": "identical to run #1 except provenance is now correct",
+  "family_loader_will_see": {
+    "newspapers_periodicals": 7468,
+    "science_technical": 5156,
+    "books_general": 2804,
+    "early_modern": 1871,
+    "legal_government": 1627,
+    "total_shards": 18926
+  }
+}

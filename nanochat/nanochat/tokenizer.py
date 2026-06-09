@@ -103,9 +103,11 @@ class HuggingFaceTokenizer:
     def id_to_token(self, id):
         return self.tokenizer.id_to_token(id)
 
-    def _encode_one(self, text, prepend=None, append=None):
+    def _encode_one(self, text, prepend=None, append=None, num_threads=None):
         # encode a single string
         # prepend/append can be either a string of a special token or a token id directly.
+        # num_threads is accepted for RustBPE signature compatibility and ignored
+        # (HF's encode_batch parallelizes internally when given a list).
         assert isinstance(text, str)
         ids = []
         if prepend is not None:
@@ -122,23 +124,44 @@ class HuggingFaceTokenizer:
         return self.tokenizer.token_to_id(text)
 
     def get_bos_token_id(self):
-        # Different HuggingFace models use different BOS tokens and there is little consistency
-        # 1) attempt to find a <|bos|> token
-        bos = self.encode_special("<|bos|>")
-        # 2) if that fails, attempt to find a <|endoftext|> token (e.g. GPT-2 models)
-        if bos is None:
-            bos = self.encode_special("<|endoftext|>")
-        # 3) if these fail, it's better to crash than to silently return None
-        assert bos is not None, "Failed to find BOS token in tokenizer"
-        return bos
+        # Different HuggingFace models use different BOS tokens and there is little consistency.
+        # Try in order: <|bos|>, <|endoftext|> (GPT-2 style), [BOS] (BERT / historical-nanochat style).
+        for name in ("<|bos|>", "<|endoftext|>", "[BOS]"):
+            tid = self.encode_special(name)
+            if tid is not None:
+                return tid
+        raise AssertionError(
+            "Failed to find BOS token in tokenizer. Tried: <|bos|>, <|endoftext|>, [BOS]."
+        )
 
-    def encode(self, text, *args, **kwargs):
+    def encode(self, text, prepend=None, append=None, num_threads=None):
+        # num_threads accepted for RustBPE compat; HF encode_batch is parallel natively.
         if isinstance(text, str):
-            return self._encode_one(text, *args, **kwargs)
-        elif isinstance(text, list):
-            return [self._encode_one(t, *args, **kwargs) for t in text]
-        else:
-            raise ValueError(f"Invalid input type: {type(text)}")
+            return self._encode_one(text, prepend=prepend, append=append)
+        if isinstance(text, list):
+            # Fast path: one shot through HF's batched encoder, then stitch prepend/append.
+            encodings = self.tokenizer.encode_batch(text, add_special_tokens=False)
+            prepend_id = None
+            append_id = None
+            if prepend is not None:
+                prepend_id = prepend if isinstance(prepend, int) else self.encode_special(prepend)
+            if append is not None:
+                append_id = append if isinstance(append, int) else self.encode_special(append)
+            out = []
+            for enc in encodings:
+                ids = enc.ids
+                if prepend_id is not None or append_id is not None:
+                    row = []
+                    if prepend_id is not None:
+                        row.append(prepend_id)
+                    row.extend(ids)
+                    if append_id is not None:
+                        row.append(append_id)
+                    out.append(row)
+                else:
+                    out.append(ids)
+            return out
+        raise ValueError(f"Invalid input type: {type(text)}")
 
     def __call__(self, *args, **kwargs):
         return self.encode(*args, **kwargs)
@@ -387,11 +410,23 @@ class RustBPETokenizer:
 # nanochat-specific convenience functions
 
 def get_tokenizer():
+    """Load the tokenizer from <base_dir>/tokenizer/.
+
+    Format auto-detection (pickle preferred for speed; json is the fallback
+    used by the historical-nanochat fork, where the corpus was trained with
+    HuggingFace BPE + ByteLevel — see tools/recover_tokenizer_artifacts.py).
+    """
     from nanochat.common import get_base_dir
     base_dir = get_base_dir()
     tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    # return HuggingFaceTokenizer.from_directory(tokenizer_dir)
-    return RustBPETokenizer.from_directory(tokenizer_dir)
+    if os.path.exists(os.path.join(tokenizer_dir, "tokenizer.pkl")):
+        return RustBPETokenizer.from_directory(tokenizer_dir)
+    if os.path.exists(os.path.join(tokenizer_dir, "tokenizer.json")):
+        return HuggingFaceTokenizer.from_directory(tokenizer_dir)
+    raise FileNotFoundError(
+        f"No tokenizer found at {tokenizer_dir}. Expected tokenizer.pkl (RustBPE) "
+        "or tokenizer.json (HuggingFace)."
+    )
 
 def get_token_bytes(device="cpu"):
     import torch
