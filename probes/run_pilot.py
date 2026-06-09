@@ -10,7 +10,7 @@ from statistics import mean
 
 ROOT = "/home/user/claudeworkspace/research/historical-nanochat"
 sys.path.insert(0, os.path.join(ROOT, "probes"))
-from harness import NanochatModel, HFModel, rank_candidates
+from harness import NanochatModel, HFModel, GPTQModel, rank_candidates
 import probe_sets as P
 
 DATE = "2026-06-09"
@@ -71,9 +71,10 @@ def run_family_b(models):
 
 def run_family_a(models):
     out = {}
+    gen_models = [m for m in models if getattr(m, "can_generate", True)]
     for stem in P.FAMILY_A_STEMS:
         out[stem] = {m.name: m.generate(stem, n=50, temperature=0.8).replace("\n", " ").strip()
-                     for m in models}
+                     for m in gen_models}
     return out
 
 
@@ -163,6 +164,10 @@ def main():
     nano = NanochatModel()
     print("loading modern anchor gpt2 ...")
     gpt2 = HFModel("gpt2")
+    # NOTE: Talkie-1930 (the post-WWI anchor) is pending a correct loader — every
+    # community HF/GPTQ conversion ships a model(65536)/tokenizer(262144) vocab
+    # mismatch, and the official lib needs >=28GB VRAM (3090 has 24GB). The
+    # GPTQModel harness class is ready for when a correct quant or CPU adapter lands.
     models = [nano, gpt2]
 
     print("running Family F (closure + falsifiers) ...")
