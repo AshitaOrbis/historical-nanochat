@@ -126,6 +126,53 @@ class HFModel:
         return self.tok.decode(out[0][len(ids):])
 
 
+class GPTQModel:
+    """A GPTQ-int4 causal LM loaded via transformers (trust_remote_code) with the
+    Triton backend forced — Marlin needs a ninja/nvcc C++ build that fails in this
+    env. Scoring only: generation tripped a CUDA device-side assert under the
+    triton-dequant path, and a device-side assert can wedge the CUDA context, so
+    generation is disabled rather than risked."""
+    can_generate = False
+
+    def __init__(self, hf_id, label, device=None):
+        from transformers import AutoModelForCausalLM, AutoTokenizer, GPTQConfig
+        self.name = "gptq_" + hf_id.split("/")[-1].replace("-", "_")
+        self.label = label
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.tok = AutoTokenizer.from_pretrained(hf_id, trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            hf_id, trust_remote_code=True, device_map="cuda", torch_dtype=torch.float16,
+            quantization_config=GPTQConfig(bits=4, backend="triton"),
+        ).eval()
+        self.bos = self.tok.bos_token_id
+        self.max_len = 1024
+
+    def _encode(self, text):
+        ids = self.tok.encode(text)
+        if self.bos is not None and (not ids or ids[0] != self.bos):
+            ids = [self.bos] + ids
+        return ids
+
+    @torch.no_grad()
+    def score(self, prefix, candidate):
+        pre = self._encode(prefix)
+        full = self._encode(prefix + candidate)
+        n_pre = len(pre)
+        if len(full) <= n_pre or len(full) > self.max_len:
+            return None
+        x = torch.tensor([full], device=self.device)
+        logits = self.model(x).logits
+        logp = torch.log_softmax(logits[0].float(), dim=-1)
+        total = 0.0
+        for pos in range(n_pre - 1, len(full) - 1):
+            total += logp[pos, full[pos + 1]].item()
+        nbytes = max(1, len(candidate.encode("utf-8")))
+        return {"sum": total, "per_byte": total / nbytes, "n_cand_tok": len(full) - n_pre}
+
+    def generate(self, *a, **k):
+        return "(generation disabled for GPTQ/triton backend)"
+
+
 def rank_candidates(model, prefix, candidates):
     """candidates: dict label->text. Returns list of (label, per_byte, sum) sorted desc."""
     rows = []
