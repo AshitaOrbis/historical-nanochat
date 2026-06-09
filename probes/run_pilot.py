@@ -14,7 +14,7 @@ from harness import NanochatModel, HFModel, GPTQModel, rank_candidates
 import probe_sets as P
 
 DATE = "2026-06-09"
-OUT_DIR = os.path.join(ROOT, "runs", f"probe_pilot_{DATE}")
+OUT_DIR = os.path.join(ROOT, "runs", f"probe_pilot_{DATE}_3anchor")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
@@ -143,7 +143,8 @@ def write_report(results, models):
     for stem, gens in results["family_a"].items():
         L.append(f"**{stem!r}**")
         for mn in mnames:
-            L.append(f"- `{mn}`: {gens[mn][:240]!r}")
+            if mn in gens:  # generation-disabled anchors (talkie/GPTQ) are absent
+                L.append(f"- `{mn}`: {gens[mn][:240]!r}")
         L.append("")
 
     L.append("## Caveats (held from probe-design.md)\n")
@@ -162,13 +163,17 @@ def write_report(results, models):
 def main():
     print("loading Pre-1913 nanochat 615M ...")
     nano = NanochatModel()
+    print("loading Talkie-1930 13B (post-WWI anchor): dtestnyrr GPTQ model + xlr8harder tokenizer ...")
+    talkie = GPTQModel(
+        "dtestnyrr/talkie-1930-13b-base-gptq-int4",
+        "Talkie-1930 13B (pre-1931 corpus, post-WWI anchor)",
+        tokenizer_id="xlr8harder/talkie-1930-13b-base-tf",  # correct 65536 TalkieTokenizer
+    )
     print("loading modern anchor gpt2 ...")
     gpt2 = HFModel("gpt2")
-    # NOTE: Talkie-1930 (the post-WWI anchor) is pending a correct loader — every
-    # community HF/GPTQ conversion ships a model(65536)/tokenizer(262144) vocab
-    # mismatch, and the official lib needs >=28GB VRAM (3090 has 24GB). The
-    # GPTQModel harness class is ready for when a correct quant or CPU adapter lands.
-    models = [nano, gpt2]
+    # order: pre-1913 (615M) -> 1930 (13B) -> modern (124M). Scale is NON-monotonic
+    # with era, which helps separate corpus/era effects from raw scale effects.
+    models = [nano, talkie, gpt2]
 
     print("running Family F (closure + falsifiers) ...")
     family_f = run_family_f(models)
