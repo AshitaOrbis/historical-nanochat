@@ -5,9 +5,13 @@ Anchors: **Pre-1913 nanochat 615M** (governed_v4 d22) · **Talkie-1930 13B** (pr
 
 > **Loader note (and a correction).** An earlier pass wrongly concluded "every talkie conversion is broken." That was over-generalized from a single bad apple: `dtestnyrr`'s GPTQ repo bundles a *wrong* 262,144-token tokenizer against the correct 65,536-vocab model, so ordinary text encoded to out-of-range ids → CUDA asserts. The model is fine. Pairing it with xlr8harder's correct `TalkieTokenizer` (65,536; max probe id 27,359, in range) + loading in **bf16** (fp16 overflowed to NaN at 13B) yields correct logprobs on the 24GB 3090. GPT-5.5-Pro independently confirmed the reconciliation ("the official code uses a 65,536 model vocab by filtering the 262,144-line BPE file").
 
-## Headline: the fracture is NOT at 1914
+## Headline (CORRECTED 2026-06-09): a real pre-modern/modern split — but Talkie-1930 does NOT test the 1914 fracture
 
-The design predicted a **three-way** split — Pre-WWI (providence/duty) vs Talkie-1930 (anti-closure) vs Modern (therapeutic). The data shows a **two-way** split: **Pre-1913 ≈ Talkie-1930** (both providence/duty) **vs Modern** (therapeutic). Talkie-1930, trained on text through 1930 — *including WWI and the 1920s* — retains the traditional closure posture. **The providence→therapeutic shift is post-1930, not a consequence of the Great War.** The instrument detects a large, robust closure dissociation; it just isn't where the 1914 hypothesis put it. This is one of the design's pre-registered outcomes (the specific fracture not separable at this cutoff), with a positive twist: a *pre-modern vs modern* signature is clearly present.
+**Retraction of an earlier overreach.** An earlier version of this doc concluded "the fracture is post-1930, not 1914" because Pre-1913 and Talkie-1930 both lead with providence/duty while modern gpt2 leads with therapeutic. **That inference is unsupported and is withdrawn.** Talkie-1930 is trained on *all* public-domain English text up to 1930, and that corpus is almost certainly **dominated by pre-1914 (likely pre-1900) material by volume** — its dominant source class (Institutional Books / digitized public-domain books) is, per the parallel corpus study arXiv:2606.02991, "concentrated between 1800 and 1900" (Institutional Books = 97.7% of that corpus). Talkie does not publish its temporal distribution. So Talkie-1930 is **not a post-WWI anchor** — it is a pre-1931 *mixture* whose averaged posture is pulled by 19th-century mass. Its patterning with the Pre-1913 model is exactly what shared pre-war corpus mass predicts and says **nothing** about whether a 1914 rupture exists.
+
+**What the data DOES support:** a large, robust, falsifier-surviving **modern-vs-old closure dissociation** on the affective axes (suffering, death) — modern gpt2 reaches for therapeutic processing where both historical corpora reach for providence/duty. The instrument works. **What it does NOT support:** locating *when* the shift happened. That requires anchors that isolate a period by volume, which neither Talkie-1930 (pre-1914-dominated mixture) nor a 615M-vs-124M scale-mismatched pair provides.
+
+**The right experiment (per the user):** isolate the interwar era with a *clean-cutoff* corpus — a model trained only on ~1918–1930 text (the post-WWI window currently in US public domain; 1931–1939 is not yet PD) — compared to the existing pre-1914 model and a modern reference, ideally all from the *same* data pipeline so only the date filter varies. See the program note below.
 
 ## The must-see probe, three orderings
 > *The son died before his father… the meaning of such suffering was*
@@ -49,10 +53,17 @@ The design's #1 worry: a bigger model looks "more postwar/darker," manufacturing
 - **`promise` boundary** (betrayal vs death) is consistent across both historical models — a real limit, not noise.
 
 ## What this means for the program
-The instrument works, the signal is real and robust, and it **refines the central hypothesis**: not a 1914 rupture but a pre-modern/modern one, detectable at 615M and confirmed at 13B. For the cloud program this is decisive de-risking — and it suggests the most interesting next experiment may be a **finer-grained cutoff sweep** (1913 / 1930 / pre-WWII / modern) to locate *when* the therapeutic turn actually registers, rather than assuming 1914.
+The instrument works and the modern-vs-old closure dissociation is real and robust. But **off-the-shelf anchors cannot locate the fracture date** — Talkie-1930 is a pre-1914-dominated mixture, and a 615M-vs-124M pair is scale-mismatched. To answer "when did the closure posture shift," the project must build **clean-cutoff anchors from its own pipeline**, varying only the publication-date filter:
 
-## Next steps (zero/low compute)
-1. **Add matched `talkie-web-13b-base`** (modern 13B) — perfect scale control; turns the strong-but-unmatched modern anchor into a clean matched one.
-2. **bf16 confirmation** of the Talkie-1930 result (rule out quantization artifacts on the headline).
-3. **Families C/D/E** for full cross-family convergence.
-4. Reframe the writeup around *pre-modern vs modern closure*, with the 1914-null as a genuine (and interesting) result.
+- **Pre-1914** (have it: the governed 615M, or a fresh d24 cloud run)
+- **Interwar 1918–1930** (NEW — the post-WWI window in current US public domain; this is the anchor that actually isolates the Great War's effect)
+- **Modern** (a same-pipeline FineWeb run, or as a rough check, gpt2/talkie-web)
+
+This is strictly better than Talkie-1930 + talkie-web, because same-pipeline cutoff variants hold *subject matter, register, OCR, and tokenizer* fixed — talkie's own authors warn that talkie-1930-vs-talkie-web differ in "distribution of subject matters," not just era. A pre-1914 vs 1918–1930 contrast from one pipeline is the clean test the 1914 hypothesis actually needs.
+
+**Copyright constraint:** the interwar window is currently limited to ~1918–1930 (works enter US public domain at 95 years; 1931–1939 is not yet free). That still cleanly isolates post-WWI (Versailles, Weimar, the 1920s, early Depression) from the pre-war world. A true pre-1939 cutoff must wait, or use non-US/openly-licensed interwar sources.
+
+## Next steps
+1. **Empirically estimate Talkie-1930's temporal weighting** (optional, low compute): measure its bits-per-byte on register-matched dated text samples (e.g., 1880s vs 1925) to put a number on the pre-1914 dilution. Confounded by register, so corpus-composition reasoning remains primary.
+2. **Scope the interwar (1918–1930) corpus build** from the existing `data/download/` pipeline (Chronicling America newspapers are dense through ~1922; Institutional Books / Internet Archive for 1918–1930 books; periodicals). This is the real next experiment.
+3. The talkie-web / bf16-confirmation / Families-C-D-E items remain useful for hardening the *modern-vs-old* result, but they do not address the *fracture-date* question — only clean-cutoff interwar anchors do.
