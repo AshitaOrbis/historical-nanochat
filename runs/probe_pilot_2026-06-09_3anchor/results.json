@@ -1,0 +1,774 @@
+{
+  "date": "2026-06-09",
+  "models": {
+    "nanochat_pre1913_615m": "Pre-1913 nanochat 615M (governed_v4 d22)",
+    "gptq_talkie_1930_13b_base_gptq_int4": "Talkie-1930 13B (pre-1931 corpus, post-WWI anchor)",
+    "hf_gpt2": "Modern base LM (gpt2)"
+  },
+  "family_f": {
+    "must_see": {
+      "prefix": "The son died before his father, and the family sat through the winter with an empty chair. The meaning of such suffering was",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "label": "Pre-1913 nanochat 615M (governed_v4 d22)",
+          "order": [
+            "A_providence",
+            "F_softened",
+            "B_duty",
+            "C_absurd",
+            "D_therapeutic",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "A_providence": -0.7382,
+            "F_softened": -0.8201,
+            "B_duty": -0.8219,
+            "C_absurd": -0.8874,
+            "D_therapeutic": -0.9197,
+            "E_antiprogress": -1.2628
+          },
+          "cluster_means": {
+            "pre": -0.78,
+            "shared": -0.8201,
+            "post": -1.0751,
+            "modern": -0.9197
+          },
+          "pre_minus_post": 0.2951,
+          "pre_minus_modern": 0.1397
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "label": "Talkie-1930 13B (pre-1931 corpus, post-WWI anchor)",
+          "order": [
+            "A_providence",
+            "B_duty",
+            "C_absurd",
+            "D_therapeutic",
+            "F_softened",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "A_providence": -0.5533,
+            "B_duty": -0.6901,
+            "C_absurd": -0.725,
+            "D_therapeutic": -0.7491,
+            "F_softened": -0.7817,
+            "E_antiprogress": -1.1453
+          },
+          "cluster_means": {
+            "pre": -0.6217,
+            "post": -0.9352,
+            "modern": -0.7491,
+            "shared": -0.7817
+          },
+          "pre_minus_post": 0.3135,
+          "pre_minus_modern": 0.1274
+        },
+        "hf_gpt2": {
+          "label": "Modern base LM (gpt2)",
+          "order": [
+            "D_therapeutic",
+            "C_absurd",
+            "B_duty",
+            "A_providence",
+            "F_softened",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "D_therapeutic": -0.5992,
+            "C_absurd": -0.8601,
+            "B_duty": -0.8631,
+            "A_providence": -0.9345,
+            "F_softened": -1.0828,
+            "E_antiprogress": -1.1677
+          },
+          "cluster_means": {
+            "modern": -0.5992,
+            "post": -1.0139,
+            "pre": -0.8988,
+            "shared": -1.0828
+          },
+          "pre_minus_post": 0.1151,
+          "pre_minus_modern": -0.2997
+        }
+      }
+    },
+    "no_religion": {
+      "prefix": "The son died before his father, and the family sat through the winter with an empty chair. The meaning of such suffering was",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "label": "Pre-1913 nanochat 615M (governed_v4 d22)",
+          "order": [
+            "A_providence",
+            "F_softened",
+            "B_duty",
+            "C_absurd",
+            "D_therapeutic",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "A_providence": -0.8091,
+            "F_softened": -0.8201,
+            "B_duty": -0.8219,
+            "C_absurd": -0.8874,
+            "D_therapeutic": -0.9197,
+            "E_antiprogress": -1.2628
+          },
+          "cluster_means": {
+            "pre": -0.8155,
+            "shared": -0.8201,
+            "post": -1.0751,
+            "modern": -0.9197
+          },
+          "pre_minus_post": 0.2596,
+          "pre_minus_modern": 0.1042
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "label": "Talkie-1930 13B (pre-1931 corpus, post-WWI anchor)",
+          "order": [
+            "B_duty",
+            "C_absurd",
+            "A_providence",
+            "D_therapeutic",
+            "F_softened",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "B_duty": -0.6901,
+            "C_absurd": -0.725,
+            "A_providence": -0.7474,
+            "D_therapeutic": -0.7491,
+            "F_softened": -0.7817,
+            "E_antiprogress": -1.1453
+          },
+          "cluster_means": {
+            "pre": -0.7187,
+            "post": -0.9352,
+            "modern": -0.7491,
+            "shared": -0.7817
+          },
+          "pre_minus_post": 0.2164,
+          "pre_minus_modern": 0.0304
+        },
+        "hf_gpt2": {
+          "label": "Modern base LM (gpt2)",
+          "order": [
+            "D_therapeutic",
+            "C_absurd",
+            "B_duty",
+            "A_providence",
+            "F_softened",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "D_therapeutic": -0.5992,
+            "C_absurd": -0.8601,
+            "B_duty": -0.8631,
+            "A_providence": -0.9386,
+            "F_softened": -1.0828,
+            "E_antiprogress": -1.1677
+          },
+          "cluster_means": {
+            "modern": -0.5992,
+            "post": -1.0139,
+            "pre": -0.9009,
+            "shared": -1.0828
+          },
+          "pre_minus_post": 0.113,
+          "pre_minus_modern": -0.3017
+        }
+      }
+    },
+    "paraphrase": {
+      "prefix": "A father outlived his only son, and through the cold months an empty place remained at the table. Such grief meant that suffering was",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "label": "Pre-1913 nanochat 615M (governed_v4 d22)",
+          "order": [
+            "A_providence",
+            "F_softened",
+            "C_absurd",
+            "B_duty",
+            "D_therapeutic",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "A_providence": -0.6327,
+            "F_softened": -0.8201,
+            "C_absurd": -0.8498,
+            "B_duty": -0.8985,
+            "D_therapeutic": -0.9229,
+            "E_antiprogress": -1.3146
+          },
+          "cluster_means": {
+            "pre": -0.7656,
+            "shared": -0.8201,
+            "post": -1.0822,
+            "modern": -0.9229
+          },
+          "pre_minus_post": 0.3166,
+          "pre_minus_modern": 0.1572
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "label": "Talkie-1930 13B (pre-1931 corpus, post-WWI anchor)",
+          "order": [
+            "A_providence",
+            "B_duty",
+            "F_softened",
+            "C_absurd",
+            "D_therapeutic",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "A_providence": -0.6247,
+            "B_duty": -0.7753,
+            "F_softened": -0.8501,
+            "C_absurd": -0.8703,
+            "D_therapeutic": -0.9019,
+            "E_antiprogress": -1.2491
+          },
+          "cluster_means": {
+            "pre": -0.7,
+            "shared": -0.8501,
+            "post": -1.0597,
+            "modern": -0.9019
+          },
+          "pre_minus_post": 0.3597,
+          "pre_minus_modern": 0.2019
+        },
+        "hf_gpt2": {
+          "label": "Modern base LM (gpt2)",
+          "order": [
+            "D_therapeutic",
+            "C_absurd",
+            "A_providence",
+            "B_duty",
+            "F_softened",
+            "E_antiprogress"
+          ],
+          "per_byte": {
+            "D_therapeutic": -0.6186,
+            "C_absurd": -0.7772,
+            "A_providence": -0.8489,
+            "B_duty": -0.9355,
+            "F_softened": -1.1096,
+            "E_antiprogress": -1.1458
+          },
+          "cluster_means": {
+            "modern": -0.6186,
+            "post": -0.9615,
+            "pre": -0.8922,
+            "shared": -1.1096
+          },
+          "pre_minus_post": 0.0693,
+          "pre_minus_modern": -0.2736
+        }
+      }
+    },
+    "bridge": {
+      "prefix": "The town built a new bridge with great hope, and on the first morning it failed and a workman was lost. The lesson the town drew was that such loss was",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "label": "Pre-1913 nanochat 615M (governed_v4 d22)",
+          "order": [
+            "A_providence",
+            "E_antiprogress",
+            "B_duty",
+            "C_absurd",
+            "D_therapeutic",
+            "F_softened"
+          ],
+          "per_byte": {
+            "A_providence": -0.6748,
+            "E_antiprogress": -0.7165,
+            "B_duty": -0.7842,
+            "C_absurd": -0.8773,
+            "D_therapeutic": -0.9031,
+            "F_softened": -0.9056
+          },
+          "cluster_means": {
+            "pre": -0.7295,
+            "post": -0.7969,
+            "modern": -0.9031,
+            "shared": -0.9056
+          },
+          "pre_minus_post": 0.0674,
+          "pre_minus_modern": 0.1736
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "label": "Talkie-1930 13B (pre-1931 corpus, post-WWI anchor)",
+          "order": [
+            "A_providence",
+            "B_duty",
+            "E_antiprogress",
+            "C_absurd",
+            "D_therapeutic",
+            "F_softened"
+          ],
+          "per_byte": {
+            "A_providence": -0.6208,
+            "B_duty": -0.6279,
+            "E_antiprogress": -0.7009,
+            "C_absurd": -0.7395,
+            "D_therapeutic": -0.7922,
+            "F_softened": -0.8231
+          },
+          "cluster_means": {
+            "pre": -0.6243,
+            "post": -0.7202,
+            "modern": -0.7922,
+            "shared": -0.8231
+          },
+          "pre_minus_post": 0.0959,
+          "pre_minus_modern": 0.1679
+        },
+        "hf_gpt2": {
+          "label": "Modern base LM (gpt2)",
+          "order": [
+            "D_therapeutic",
+            "E_antiprogress",
+            "C_absurd",
+            "F_softened",
+            "B_duty",
+            "A_providence"
+          ],
+          "per_byte": {
+            "D_therapeutic": -0.8221,
+            "E_antiprogress": -0.8442,
+            "C_absurd": -0.8522,
+            "F_softened": -0.8691,
+            "B_duty": -0.913,
+            "A_providence": -1.0752
+          },
+          "cluster_means": {
+            "modern": -0.8221,
+            "post": -0.8482,
+            "shared": -0.8691,
+            "pre": -0.9941
+          },
+          "pre_minus_post": -0.1459,
+          "pre_minus_modern": -0.1719
+        }
+      }
+    },
+    "promise": {
+      "prefix": "A promise made in youth was broken in age, and the letters were found too late. What such a betrayal meant was that the wound was",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "label": "Pre-1913 nanochat 615M (governed_v4 d22)",
+          "order": [
+            "C_absurd",
+            "F_softened",
+            "D_therapeutic",
+            "A_providence",
+            "E_antiprogress",
+            "B_duty"
+          ],
+          "per_byte": {
+            "C_absurd": -0.8563,
+            "F_softened": -0.9196,
+            "D_therapeutic": -0.9601,
+            "A_providence": -1.0227,
+            "E_antiprogress": -1.0559,
+            "B_duty": -1.1537
+          },
+          "cluster_means": {
+            "post": -0.9561,
+            "shared": -0.9196,
+            "modern": -0.9601,
+            "pre": -1.0882
+          },
+          "pre_minus_post": -0.1321,
+          "pre_minus_modern": -0.128
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "label": "Talkie-1930 13B (pre-1931 corpus, post-WWI anchor)",
+          "order": [
+            "C_absurd",
+            "A_providence",
+            "F_softened",
+            "D_therapeutic",
+            "E_antiprogress",
+            "B_duty"
+          ],
+          "per_byte": {
+            "C_absurd": -0.8066,
+            "A_providence": -0.8395,
+            "F_softened": -0.869,
+            "D_therapeutic": -0.9211,
+            "E_antiprogress": -0.9826,
+            "B_duty": -1.0291
+          },
+          "cluster_means": {
+            "post": -0.8946,
+            "pre": -0.9343,
+            "shared": -0.869,
+            "modern": -0.9211
+          },
+          "pre_minus_post": -0.0397,
+          "pre_minus_modern": -0.0132
+        },
+        "hf_gpt2": {
+          "label": "Modern base LM (gpt2)",
+          "order": [
+            "D_therapeutic",
+            "C_absurd",
+            "E_antiprogress",
+            "A_providence",
+            "B_duty",
+            "F_softened"
+          ],
+          "per_byte": {
+            "D_therapeutic": -0.8772,
+            "C_absurd": -0.9297,
+            "E_antiprogress": -0.9672,
+            "A_providence": -1.0576,
+            "B_duty": -1.0985,
+            "F_softened": -1.1704
+          },
+          "cluster_means": {
+            "modern": -0.8772,
+            "post": -0.9484,
+            "pre": -1.078,
+            "shared": -1.1704
+          },
+          "pre_minus_post": -0.1296,
+          "pre_minus_modern": -0.2008
+        }
+      }
+    }
+  },
+  "family_b": {
+    "progress": {
+      "prefix": "Progress is",
+      "contrast": "A_ascent - C_idol",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "order": [
+            "A_ascent",
+            "D_managed",
+            "C_idol",
+            "B_elegy"
+          ],
+          "per_byte": {
+            "A_ascent": -0.6315,
+            "D_managed": -1.0058,
+            "C_idol": -1.1509,
+            "B_elegy": -1.4132
+          },
+          "contrast": 0.5194
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "order": [
+            "A_ascent",
+            "C_idol",
+            "D_managed",
+            "B_elegy"
+          ],
+          "per_byte": {
+            "A_ascent": -0.3417,
+            "C_idol": -0.7048,
+            "D_managed": -0.8529,
+            "B_elegy": -1.3413
+          },
+          "contrast": 0.3631
+        },
+        "hf_gpt2": {
+          "order": [
+            "D_managed",
+            "A_ascent",
+            "C_idol",
+            "B_elegy"
+          ],
+          "per_byte": {
+            "D_managed": -0.8113,
+            "A_ascent": -0.8319,
+            "C_idol": -1.1694,
+            "B_elegy": -1.4343
+          },
+          "contrast": 0.3375
+        }
+      }
+    },
+    "suffering": {
+      "prefix": "The proper response to suffering is",
+      "contrast": "A_endurance - C_recovery",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "order": [
+            "A_endurance",
+            "B_revolt",
+            "C_recovery",
+            "D_silence"
+          ],
+          "per_byte": {
+            "A_endurance": -0.824,
+            "B_revolt": -0.833,
+            "C_recovery": -0.8415,
+            "D_silence": -1.0593
+          },
+          "contrast": 0.0175
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "order": [
+            "B_revolt",
+            "A_endurance",
+            "D_silence",
+            "C_recovery"
+          ],
+          "per_byte": {
+            "B_revolt": -0.6243,
+            "A_endurance": -0.72,
+            "D_silence": -0.7335,
+            "C_recovery": -0.8465
+          },
+          "contrast": 0.1265
+        },
+        "hf_gpt2": {
+          "order": [
+            "C_recovery",
+            "B_revolt",
+            "A_endurance",
+            "D_silence"
+          ],
+          "per_byte": {
+            "C_recovery": -0.5785,
+            "B_revolt": -0.7152,
+            "A_endurance": -0.8059,
+            "D_silence": -0.8271
+          },
+          "contrast": -0.2274
+        }
+      }
+    },
+    "authority": {
+      "prefix": "Authority is justified by",
+      "contrast": "A_inheritance - C_force",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "order": [
+            "D_competence",
+            "B_consent",
+            "A_inheritance",
+            "C_force"
+          ],
+          "per_byte": {
+            "D_competence": -0.935,
+            "B_consent": -0.9496,
+            "A_inheritance": -1.0603,
+            "C_force": -1.325
+          },
+          "contrast": 0.2647
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "order": [
+            "A_inheritance",
+            "D_competence",
+            "B_consent",
+            "C_force"
+          ],
+          "per_byte": {
+            "A_inheritance": -0.6969,
+            "D_competence": -0.7892,
+            "B_consent": -0.814,
+            "C_force": -1.0341
+          },
+          "contrast": 0.3371
+        },
+        "hf_gpt2": {
+          "order": [
+            "B_consent",
+            "D_competence",
+            "A_inheritance",
+            "C_force"
+          ],
+          "per_byte": {
+            "B_consent": -0.6497,
+            "D_competence": -0.7248,
+            "A_inheritance": -0.7767,
+            "C_force": -1.0566
+          },
+          "contrast": 0.2799
+        }
+      }
+    },
+    "death": {
+      "prefix": "The death of a young man is",
+      "contrast": "A_sacrifice - B_waste",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "order": [
+            "A_sacrifice",
+            "B_waste",
+            "C_grief",
+            "D_processed"
+          ],
+          "per_byte": {
+            "A_sacrifice": -0.8281,
+            "B_waste": -0.9754,
+            "C_grief": -1.0128,
+            "D_processed": -1.228
+          },
+          "contrast": 0.1473
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "order": [
+            "A_sacrifice",
+            "C_grief",
+            "B_waste",
+            "D_processed"
+          ],
+          "per_byte": {
+            "A_sacrifice": -0.6313,
+            "C_grief": -0.7247,
+            "B_waste": -0.8722,
+            "D_processed": -1.0058
+          },
+          "contrast": 0.2409
+        },
+        "hf_gpt2": {
+          "order": [
+            "C_grief",
+            "D_processed",
+            "B_waste",
+            "A_sacrifice"
+          ],
+          "per_byte": {
+            "C_grief": -0.8512,
+            "D_processed": -0.8879,
+            "B_waste": -0.896,
+            "A_sacrifice": -0.9617
+          },
+          "contrast": -0.0657
+        }
+      }
+    },
+    "nation": {
+      "prefix": "A nation is",
+      "contrast": "A_inheritance - C_idol",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "order": [
+            "A_inheritance",
+            "D_civic",
+            "B_law",
+            "C_idol"
+          ],
+          "per_byte": {
+            "A_inheritance": -0.7198,
+            "D_civic": -1.1974,
+            "B_law": -1.2194,
+            "C_idol": -1.3701
+          },
+          "contrast": 0.6503
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "order": [
+            "A_inheritance",
+            "D_civic",
+            "B_law",
+            "C_idol"
+          ],
+          "per_byte": {
+            "A_inheritance": -0.5267,
+            "D_civic": -0.931,
+            "B_law": -0.9756,
+            "C_idol": -1.2168
+          },
+          "contrast": 0.6901
+        },
+        "hf_gpt2": {
+          "order": [
+            "A_inheritance",
+            "B_law",
+            "D_civic",
+            "C_idol"
+          ],
+          "per_byte": {
+            "A_inheritance": -0.7623,
+            "B_law": -0.8861,
+            "D_civic": -0.9411,
+            "C_idol": -1.1086
+          },
+          "contrast": 0.3463
+        }
+      }
+    },
+    "machine": {
+      "prefix": "The machine is",
+      "contrast": "A_servant - C_devourer",
+      "models": {
+        "nanochat_pre1913_615m": {
+          "order": [
+            "B_mastery",
+            "A_servant",
+            "C_devourer",
+            "D_regulated"
+          ],
+          "per_byte": {
+            "B_mastery": -0.822,
+            "A_servant": -0.8252,
+            "C_devourer": -1.0018,
+            "D_regulated": -1.2787
+          },
+          "contrast": 0.1766
+        },
+        "gptq_talkie_1930_13b_base_gptq_int4": {
+          "order": [
+            "B_mastery",
+            "A_servant",
+            "C_devourer",
+            "D_regulated"
+          ],
+          "per_byte": {
+            "B_mastery": -0.7521,
+            "A_servant": -0.8849,
+            "C_devourer": -1.0231,
+            "D_regulated": -1.3605
+          },
+          "contrast": 0.1381
+        },
+        "hf_gpt2": {
+          "order": [
+            "B_mastery",
+            "A_servant",
+            "C_devourer",
+            "D_regulated"
+          ],
+          "per_byte": {
+            "B_mastery": -0.8278,
+            "A_servant": -0.9093,
+            "C_devourer": -1.0338,
+            "D_regulated": -1.1193
+          },
+          "contrast": 0.1245
+        }
+      }
+    }
+  },
+  "family_a": {
+    "The proper response to suffering is": {
+      "nanochat_pre1913_615m": "in the very nature of things a question of some moment. And it has a very con- spicuous place in the present situation, inasmuch as many sufferers by the strike have had to live as best they could.",
+      "hf_gpt2": "self-preservation. We need to remember that the only way out of this tragic situation is to help as many people as possible. The time has come to act responsibly and to stop suffering. When we are not dealing with painful situations, we are"
+    },
+    "The future of Europe is": {
+      "nanochat_pre1913_615m": "at stake. The struggle is to be waged upon the great question of the future of the French in dustrieS. The conflict is to be waged up on the question of the future of the South in the",
+      "hf_gpt2": "now looking bleak for European Union members.  In a new report, the Commission today released a plan to make it easier in 2019 to join the EU as a single country.  The EU's biggest single market has been hit by economic woes"
+    },
+    "A man's duty is": {
+      "nanochat_pre1913_615m": "not only to keep clean his own boots, but to provide a clean pair for others to wear at the proper season.<|bos|>The time to build bridges is when building them is going on. When once they are built, you",
+      "hf_gpt2": "to follow orders from a policeman.  This includes the fact that law enforcement officers are often more than a little surprised when a man is arrested or charged in connection with a crime.  However, there have been some cases where officers have taken"
+    },
+    "The machine has given men": {
+      "nanochat_pre1913_615m": "the highest results and we are proud to acknowledge the fact. The same high standard should be maintained with the workers at home.<|bos|>The city officials of Spokane are said to be in favor of the proposed",
+      "hf_gpt2": "the power to rape their female companions and carry out rape against them.  The women in the picture are identified only as Sabine, Naeem and Neeel.  The men's number is also unknown.  In his"
+    },
+    "The hope of mankind": {
+      "nanochat_pre1913_615m": ". in the midst of the storm, is in the protection of an overruling Providence.<|bos|>The following is said to be the latest speculation in Boston papers: \"The re. ports of the death of Mrs. Mary f",
+      "hf_gpt2": "has been that all the people of the earth are of one mind; not that they are all of one mind; but that all the people of the earth have one mind, and all the people of the earth have one mind. And since for their"
+    },
+    "Authority comes from": {
+      "nanochat_pre1913_615m": "Washington that Congress will take the initiative in the fight on the Philippines.<|bos|>In order to put to the test the strength OF the republican party on the Philippine tariff question, the Chicago convention of the repub",
+      "hf_gpt2": "the first name of the sovereign power. It is held by an individual or group of people. In this way, it is not the authority that governs the nation or country but the sovereign power.  It is an authority that gives them the power"
+    }
+  }
+}

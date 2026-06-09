@@ -134,14 +134,21 @@ class GPTQModel:
     generation is disabled rather than risked."""
     can_generate = False
 
-    def __init__(self, hf_id, label, device=None):
+    def __init__(self, hf_id, label, tokenizer_id=None, device=None):
+        # tokenizer_id lets us pair a model with a tokenizer from a DIFFERENT repo.
+        # Needed for talkie: the dtestnyrr GPTQ model is correct (65536 vocab) but
+        # ships a WRONG 262144 tokenizer; the correct TalkieTokenizer (65536, in-range
+        # ids) lives in xlr8harder's repo. Mismatched tokenizers were the CUDA-assert
+        # cause, not the model — every model conversion is actually 65536-consistent.
         from transformers import AutoModelForCausalLM, AutoTokenizer, GPTQConfig
         self.name = "gptq_" + hf_id.split("/")[-1].replace("-", "_")
         self.label = label
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.tok = AutoTokenizer.from_pretrained(hf_id, trust_remote_code=True)
+        self.tok = AutoTokenizer.from_pretrained(tokenizer_id or hf_id, trust_remote_code=True)
+        # bfloat16, not float16: a 13B forward overflows fp16's narrow exponent
+        # range -> NaN logits. bf16 matches fp32's range and the 3090 supports it.
         self.model = AutoModelForCausalLM.from_pretrained(
-            hf_id, trust_remote_code=True, device_map="cuda", torch_dtype=torch.float16,
+            hf_id, trust_remote_code=True, device_map="cuda", torch_dtype=torch.bfloat16,
             quantization_config=GPTQConfig(bits=4, backend="triton"),
         ).eval()
         self.bos = self.tok.bos_token_id
