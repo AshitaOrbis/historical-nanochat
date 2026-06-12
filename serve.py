@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Simple OpenAI-compatible API server for Historical Nanochat."""
 
+import os
 import sys
-sys.path.insert(0, "/home/user/historical-nanochat/nanochat")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "nanochat"))
 
 import torch
 import json
@@ -30,8 +31,15 @@ def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading model on {device}...")
 
-    checkpoint_dir = "/home/user/.cache/nanochat/base_checkpoints/d12_v1"
-    model_data, _, meta_data = load_checkpoint(checkpoint_dir, 15250, device, load_optimizer=False)
+    # NOTE: example values. The d12_v1 / step-15250 checkpoint referenced here was
+    # lost in the WSL->native-Linux migration (see claude.md). Point these at one of
+    # your own checkpoints (e.g. a d22 run under base_checkpoints/) before serving.
+    checkpoint_dir = os.environ.get(
+        "NANOCHAT_CHECKPOINT_DIR",
+        os.path.expanduser("~/.cache/nanochat/base_checkpoints/d12_v1"),
+    )
+    step = int(os.environ.get("NANOCHAT_CHECKPOINT_STEP", "15250"))
+    model_data, _, meta_data = load_checkpoint(checkpoint_dir, step, device, load_optimizer=False)
 
     cfg = meta_data["model_config"]
     config = GPTConfig(**cfg)
@@ -94,7 +102,9 @@ def list_models():
 @app.route('/v1/completions', methods=['POST'])
 def completions():
     """OpenAI-compatible completions endpoint."""
-    data = request.json
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
 
     prompt = data.get('prompt', '')
     max_tokens = data.get('max_tokens', 100)
@@ -162,7 +172,9 @@ def completions():
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     """OpenAI-compatible chat completions endpoint."""
-    data = request.json
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
 
     messages = data.get('messages', [])
     max_tokens = data.get('max_tokens', 100)
@@ -217,4 +229,9 @@ if __name__ == '__main__':
     print('    -d \'{"prompt": "In the year 1850,", "max_tokens": 50}\'')
     print("="*50 + "\n")
 
-    app.run(host='0.0.0.0', port=5000)
+    # Bind to localhost by default: this server has NO authentication and runs an
+    # unrestricted inference endpoint. Only expose it on 0.0.0.0 inside a trusted
+    # network by explicitly setting SERVE_HOST=0.0.0.0.
+    host = os.environ.get("SERVE_HOST", "127.0.0.1")
+    port = int(os.environ.get("SERVE_PORT", "5000"))
+    app.run(host=host, port=port)
