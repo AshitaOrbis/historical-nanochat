@@ -174,6 +174,25 @@ to 2, or set `KV_HEAD_RATIO=0.5` to enable GQA. See `docs/TRAINING_3090.md`.
 - [Vintage LLMs](https://owainevans.github.io/talk-transcript.html) - Concept exploration
 - [nanochat](https://github.com/karpathy/nanochat) - Base training pipeline
 
+## Security
+
+**Read [`SECURITY.md`](SECURITY.md) before running this on anything you don't
+fully control.** This is a single-user research pipeline built on upstream
+nanochat. It assumes you trust the model-generated code it executes, every
+checkpoint and tokenizer artifact you load, and the local filesystem it operates
+on. In particular:
+
+- The HumanEval `execute_code` path (`nanochat/nanochat/execution.py`) is **not a
+  security sandbox** — untrusted model-generated code can achieve host code
+  execution. Run it inside a real container/microVM if the model is untrusted.
+- Loading checkpoints (`torch.load`) or `tokenizer.pkl` (`pickle.load`) from an
+  untrusted source is **arbitrary code execution**. Only load artifacts you
+  produced or trust; prefer `safetensors` / `tokenizer.json`.
+
+`SECURITY.md` documents each issue, its disposition, and the operational
+mitigations honestly — these are inherent properties of the design, not bugs a
+code patch can remove without changing what the tool is.
+
 ## License
 
 MIT License (same as nanochat)
