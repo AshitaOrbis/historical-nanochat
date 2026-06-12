@@ -35,8 +35,8 @@
     "core_metric_every": -1,
     "sample_every": -1,
     "save_every": 100,
-    "token_cache_dir": "/home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/train",
-    "val_cache_dir": "/home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/val",
+    "token_cache_dir": "data/token_cache_v4_balanced_candidate/train",
+    "val_cache_dir": "data/token_cache_v4_balanced_candidate/val",
     "model_tag": "v4_smoke_d22"
   },
   "systemd_scope_command": "systemd-run --user --scope --slice=compute.slice --unit=v4_smoke_d22 --property=OOMPolicy=continue --collect",

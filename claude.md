@@ -28,9 +28,9 @@ All data is on native Linux ext4 (copied from Windows NTFS, Apr 2026):
 
 ### Windows drive copies (can be deleted to reclaim ~499G on NTFS)
 
-- `/mnt/c/Users/***REMOVED***/D-drive-data/historical-nanochat-deduped/`
-- `/mnt/c/Users/***REMOVED***/D-drive-data/historical-nanochat-shards/`
-- `/mnt/c/Users/***REMOVED***/D-drive-data/historical-nanochat-shards-small/`
+- `/mnt/c/Users/<user>/D-drive-data/historical-nanochat-deduped/`
+- `/mnt/c/Users/<user>/D-drive-data/historical-nanochat-shards/`
+- `/mnt/c/Users/<user>/D-drive-data/historical-nanochat-shards-small/`
 
 ### Deleted Data (Feb 2026 cleanup)
 
@@ -74,13 +74,13 @@ All data is on native Linux ext4 (copied from Windows NTFS, Apr 2026):
 
 ```bash
 # Recreate venv first (deleted during Feb 2026 cleanup)
-cd /home/user/historical-nanochat
+# (run from the repository root)
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
 # Resume training from checkpoint (use device_batch_size=2 on 3090!)
-cd /home/user/historical-nanochat/nanochat
+cd nanochat
 source ../.venv/bin/activate
 PYTHONUNBUFFERED=1 WANDB_MODE=offline TORCH_COMPILE_DISABLE=1 python -m scripts.base_train \
   --depth=12 --num_iterations=15250 --device_batch_size=2 --max_seq_len=2048 \

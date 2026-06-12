@@ -9,7 +9,7 @@ Evidence checked locally:
 - `report/governed_v4_run1_postmortem_detailed.md`: stale provenance served only 16.5% of cache with 19.2% correct family tags while training metrics looked healthy.
 - `report/deliberation-2026-05-12/round1-validity/empirical-findings.md`: current headline validation reads 262,144 tokens from the first Gutenberg val shard, not the full held-out split.
 - `nanochat/nanochat/dataloader_cached.py`: current `parallel_family_cache` still raises for `world_size > 1`, so 8xH100 launch needs loader work.
-- `tokenizer/tokenizer_manifest.json`: tokenizer input is `/home/user/historical-nanochat/data/shards`, not proven final train-only v4 data.
+- `tokenizer/tokenizer_manifest.json`: tokenizer input is `data/shards`, not proven final train-only v4 data.
 - `data/processed/corpus_1913_v4_balanced_candidate/reports/source_mix.md`: actual train mix is about 40.27 / 20.13 / 20.40 / 10.07 / 9.13, with several important val-only sources.
 - `data/phase0/README.md`: cross-source SimHash/MinHash dedup is explicitly not implemented.
 

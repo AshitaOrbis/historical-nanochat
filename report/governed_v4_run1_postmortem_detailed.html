@@ -266,9 +266,9 @@ for r in ps:
 <hr />
 <h2 id="the-fix">The fix</h2>
 <h3 id="immediate-regenerate-provenance-from-the-post-split-manifest">Immediate — regenerate provenance from the post-split manifest</h3>
-<pre><code class="language-bash">cd /home/user/historical-nanochat
-PYTHONPATH=/home/user/historical-nanochat \
-  /home/user/claudeworkspace/research/historical-nanochat/.venv/bin/python \
+<pre><code class="language-bash">cd .
+PYTHONPATH=. \
+  .venv/bin/python \
   -m data.phase0.process.build_token_cache_v4 --skip-train --skip-val
 </code></pre>
 <p>The <code>--skip-train --skip-val</code> flags tell the script to skip retokenization and only regenerate <code>provenance.json</code> by parsing each manifest shard's <code>source_file</code> field. After regeneration:</p>

@@ -8,7 +8,7 @@ Record tok/s, peak VRAM, loss, loader wait, and derive wall-clock estimates
 for ratio=20 (Chinchilla-optimal) and ratio=40 (2x Chinchilla).
 
 Usage:
-  python tools/depth_sweep.py --token-cache-dir /home/user/historical-nanochat/data/token_cache_v2 --output-dir /tmp/depth_sweep
+  python tools/depth_sweep.py --token-cache-dir data/token_cache_v2 --output-dir /tmp/depth_sweep
 """
 
 from __future__ import annotations

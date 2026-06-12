@@ -20,7 +20,7 @@ Preferred target band:
 
 ## 1. Current `governed_v3_newspaper_dominated_smoke_corpus` (exact tokenizer)
 
-Source: `/home/user/historical-nanochat/data/token_cache_v3/cache_manifest.json`
+Source: `data/token_cache_v3/cache_manifest.json`
 
 - Total tokens: **66,692,365,636 (66.69 B)**
 - Docs: 222,251,564 across 4,451 governed parquet shards

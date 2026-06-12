@@ -11,7 +11,7 @@ def convert_nanochat_to_hf(checkpoint_dir: str, step: int, output_dir: str):
 
     # Add nanochat to path
     import sys
-    sys.path.insert(0, "/home/user/historical-nanochat/nanochat")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "nanochat"))
 
     from nanochat.checkpoint_manager import load_checkpoint
     from nanochat.tokenizer import get_tokenizer
@@ -107,7 +107,7 @@ def convert_nanochat_to_hf(checkpoint_dir: str, step: int, output_dir: str):
 
 if __name__ == "__main__":
     convert_nanochat_to_hf(
-        "/home/user/.cache/nanochat/base_checkpoints/d12_v1",
+        os.path.expanduser("~/.cache/nanochat/base_checkpoints/d12_v1"),
         15250,
-        "/home/user/historical-nanochat/hf_model"
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "hf_model"),
     )

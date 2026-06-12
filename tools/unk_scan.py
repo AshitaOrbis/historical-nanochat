@@ -26,7 +26,7 @@ Output: JSON report at --output. Shape:
   }
 
 Usage:
-  python tools/unk_scan.py --shards /home/user/historical-nanochat/data/shards \
+  python tools/unk_scan.py --shards data/shards \
                            --output tokenizer/unk_scan.json \
                            --sample-every 1       # scan every doc
                            --top-n 20
@@ -63,7 +63,7 @@ def source_from_record(text: str) -> str | None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shards", type=str, default="/home/user/historical-nanochat/data/shards",
+    ap.add_argument("--shards", type=str, default="data/shards",
                     help="Directory of parquet shards.")
     ap.add_argument("--tokenizer-json", type=str, default=str(REPO_ROOT / "tokenizer" / "tokenizer.json"))
     ap.add_argument("--output", type=str, default=str(REPO_ROOT / "tokenizer" / "unk_scan.json"))

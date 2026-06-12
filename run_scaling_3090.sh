@@ -6,7 +6,7 @@ export TORCH_COMPILE_DISABLE=1
 export PYTHONUNBUFFERED=1
 export WANDB_MODE=offline
 
-cd /home/user/historical-nanochat/nanochat
+cd "$(dirname "$0")/nanochat"
 source ../.venv/bin/activate
 
 DEPTHS=(8 12 16)

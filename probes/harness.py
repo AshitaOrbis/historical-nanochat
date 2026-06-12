@@ -17,7 +17,9 @@ Scoring follows the probe-design rules:
 import os, sys
 import torch
 
-ROOT = "/home/user/claudeworkspace/research/historical-nanochat"
+# Repo root, derived from this file's location (probes/harness.py -> repo root).
+# Override the artifact base directory by exporting NANOCHAT_BASE_DIR.
+ROOT = os.environ.get("NANOCHAT_BASE_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("NANOCHAT_BASE_DIR", ROOT)
 sys.path.insert(0, os.path.join(ROOT, "nanochat"))
 

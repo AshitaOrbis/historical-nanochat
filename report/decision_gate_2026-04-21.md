@@ -170,7 +170,7 @@ Targeted date for governed run launch: **when legacy_textonly_d22_r30 completes*
 
 - Legacy checkpoints are **not** used as teachers.
 - Legacy samples are labeled `legacy/internal/baseline`.
-- Governed shards live under `data/phase0/governed_shards/`; `token_cache_v3` lives under `/home/user/historical-nanochat/data/token_cache_v3`; neither touches `data/shards/` or `token_cache_v2`.
+- Governed shards live under `data/phase0/governed_shards/`; `token_cache_v3` lives under `data/token_cache_v3`; neither touches `data/shards/` or `token_cache_v2`.
 - Any outreach email that mentions a model must refer to a governed model, not this baseline.
 
 ---

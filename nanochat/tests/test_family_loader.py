@@ -13,7 +13,7 @@ os.environ.setdefault("RANK", "0")
 os.environ.setdefault("WORLD_SIZE", "1")
 os.environ.setdefault("LOCAL_RANK", "0")
 
-CACHE_TRAIN = Path("/home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/train")
+CACHE_TRAIN = Path("data/token_cache_v4_balanced_candidate/train")
 
 
 def test_schedule_produces_expected_family_mix_per_step():

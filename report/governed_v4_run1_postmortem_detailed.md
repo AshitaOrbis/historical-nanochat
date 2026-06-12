@@ -211,9 +211,9 @@ There's no schema-level link between the two files. A `shard_index` in provenanc
 ### Immediate — regenerate provenance from the post-split manifest
 
 ```bash
-cd /home/user/historical-nanochat
-PYTHONPATH=/home/user/historical-nanochat \
-  /home/user/claudeworkspace/research/historical-nanochat/.venv/bin/python \
+cd .
+PYTHONPATH=. \
+  .venv/bin/python \
   -m data.phase0.process.build_token_cache_v4 --skip-train --skip-val
 ```
 

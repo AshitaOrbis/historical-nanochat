@@ -132,7 +132,7 @@ misc_holdout_or_eval: 0.05
 
 ### 3.1 Raw deduped JSONL by source
 
-Located at `/home/user/historical-nanochat/data/deduped/` (ext4, 398 GB total):
+Located at `data/deduped/` (ext4, 398 GB total):
 
 | Source | JSONL size | Approx record schema | Has `source` | Has date | Has `rights` |
 |---|---:|---|---|---|---|
@@ -213,8 +213,8 @@ Missing vs. the plan:
 
 ### 3.4 Training shards currently feeding d22
 
-**Path:** `/home/user/historical-nanochat/data/shards/` (322 parquet files, 36 GB)
-**Token cache:** `/home/user/historical-nanochat/data/token_cache_v2/` (47 GB uint16, 25.2 B tokens)
+**Path:** `data/shards/` (322 parquet files, 36 GB)
+**Token cache:** `data/token_cache_v2/` (47 GB uint16, 25.2 B tokens)
 
 Shard-record schema: `{"text": str}` — **no source_id, no date, no rights, no
 document_id, no cutoff_bucket, nothing else.** All the provenance that was in
@@ -298,7 +298,7 @@ total_tokens                 18,469,355,520 (18.47 B)
 compile_mode                 default
 activation_checkpoint        off
 tokenizer                    rustbpe vocab 32768
-token_cache                  /home/user/historical-nanochat/data/token_cache_v2
+token_cache                  data/token_cache_v2
 save_every                   2000 (≈ 9 h between checkpoints)
 eval_every                   1000 (1 M-token BPB)
 core_metric_every            disabled (run post-training)

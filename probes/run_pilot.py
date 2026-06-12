@@ -8,7 +8,7 @@ Usage: NANOCHAT_BASE_DIR=$PWD .venv/bin/python probes/run_pilot.py
 import os, sys, json
 from statistics import mean
 
-ROOT = "/home/user/claudeworkspace/research/historical-nanochat"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "probes"))
 from harness import NanochatModel, HFModel, GPTQModel, rank_candidates
 import probe_sets as P

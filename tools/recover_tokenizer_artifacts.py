@@ -284,7 +284,7 @@ def main():
     ap.add_argument("--tokenizer-dir", type=str, default=str(REPO_ROOT / "tokenizer"))
     ap.add_argument("--output-dir", type=str, default=None)
     ap.add_argument("--corpus-dir", type=str,
-                    default="/home/user/historical-nanochat/data/shards")
+                    default="data/shards")
     ap.add_argument("--corpus-samples", type=int, default=200)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
