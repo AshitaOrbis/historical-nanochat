@@ -144,7 +144,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tokenizer-dir", type=str, default=str(REPO_ROOT / "tokenizer"))
     ap.add_argument("--corpus-dir", type=str,
-                    default="/home/user/historical-nanochat/data/shards")
+                    default="data/shards")
     ap.add_argument("--corpus-samples", type=int, default=500)
     ap.add_argument("--full-unk-scan", action="store_true",
                     help="Scan every document in every shard for byte-drop round-trip failures.")

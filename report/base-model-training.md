@@ -34,8 +34,8 @@ timestamp: 2026-05-10 17:44:13
 - seq_len_late: -1
 - seq_len_late_frac: 0.8000
 - parquet_dir: None
-- token_cache_dir: /home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/train
-- val_cache_dir: /home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/val
+- token_cache_dir: data/token_cache_v4_balanced_candidate/train
+- val_cache_dir: data/token_cache_v4_balanced_candidate/val
 - loader_strategy: parallel_family_cache
 - eval_every: 1000
 - eval_tokens: 262,144
@@ -43,7 +43,7 @@ timestamp: 2026-05-10 17:44:13
 - core_metric_max_per_task: 500
 - sample_every: 5000
 - save_every: 2000
-- benchmark_csv: /home/user/claudeworkspace/research/historical-nanochat/logs/phase0/governed_v4_d22_r30_parallel_family_run3_resume10000_bench.csv
+- benchmark_csv: logs/phase0/governed_v4_d22_r30_parallel_family_run3_resume10000_bench.csv
 - model_tag: governed_v4_d22_r30_parallel_family
 - Number of parameters: 615,645,184
 - Number of FLOPs per token: 3.797680e+09

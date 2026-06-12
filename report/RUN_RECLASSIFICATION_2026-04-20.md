@@ -75,7 +75,7 @@ Until the gate fires, **do not disturb the running process**. It is pid
 - bench CSV: `logs/d22_r30_20260420_090531_bench.csv`
 - checkpoints: `base_checkpoints/` (save_every=2000; first save at step 2000)
 - token cache (READ-ONLY during this run):
-  `/home/user/historical-nanochat/data/token_cache_v2/`
+  `data/token_cache_v2/`
 
 Any Phase-0-lite write must target new paths
 (`token_cache_v3/`, `data/processed/governed/`, etc.) and must not touch the

@@ -29,8 +29,8 @@ chunked_loss:             True
 loss_chunk_size:          1024
 activation_checkpoint:    False
 tokenizer:                /tokenizer/tokenizer.pkl (vocab 32768, SHA from manifest)
-token_cache_dir:          /home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/train
-val_cache_dir:            /home/user/historical-nanochat/data/token_cache_v4_balanced_candidate/val
+token_cache_dir:          data/token_cache_v4_balanced_candidate/train
+val_cache_dir:            data/token_cache_v4_balanced_candidate/val
 eval_every:               50         # 4 val checks during the 200-iter smoke
 eval_tokens:              262_144
 core_metric_every:        -1         # no CORE during smoke

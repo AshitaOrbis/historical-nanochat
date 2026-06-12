@@ -3,11 +3,11 @@
   "git_commit": "516934a8f84e8b2971ca233a26b07488dfcc5219",
   "timestamp": "2026-04-19T13:19:24-0700",
   "inputs": {
-    "tokenizer_json": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/tokenizer.json",
+    "tokenizer_json": "tokenizer/tokenizer.json",
     "sha256_tokenizer_json": "e5e9b875f5feb195481c2212f084dd71c359fef3bc4a8eb5d5775a8e934c2da5"
   },
   "outputs": {
-    "token_bytes_pt": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/token_bytes.pt",
+    "token_bytes_pt": "tokenizer/token_bytes.pt",
     "sha256_token_bytes_pt": "92f59a66e09b1afa25c1fef0f4341db043993bd3dd4cc98d65a9c7d22ca4fb96"
   },
   "tokenizer": {

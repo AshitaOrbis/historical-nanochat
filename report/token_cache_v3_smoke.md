@@ -1,6 +1,6 @@
 # token_cache_v3 Smoke Report
 
-- cache_dir: `/home/user/historical-nanochat/data/token_cache_v4_balanced_candidate`
+- cache_dir: `data/token_cache_v4_balanced_candidate`
 - batch: 2
 - seq_len: 128
 - timestamp: 2026-04-24T11:43:49.361780Z

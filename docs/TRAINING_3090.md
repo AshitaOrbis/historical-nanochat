@@ -8,7 +8,7 @@ chunked LM-head loss, finishing in ~1–2 weeks of wall clock.
 
 ```bash
 # 1. Point training at pre-packaged historical shards. No base_data/ wrapper required.
-export NANOCHAT_PARQUET_DIR=/home/user/historical-nanochat/data/shards
+export NANOCHAT_PARQUET_DIR=data/shards
 
 # 2. Base pretraining
 cd nanochat

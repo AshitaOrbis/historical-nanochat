@@ -24,12 +24,12 @@
     "train_time_sec": 422.0
   },
   "inputs": {
-    "corpus_dir": "/home/user/historical-nanochat/data/shards"
+    "corpus_dir": "data/shards"
   },
   "outputs": {
-    "tokenizer_pkl": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/tokenizer.pkl",
+    "tokenizer_pkl": "tokenizer/tokenizer.pkl",
     "sha256_tokenizer_pkl": "f4ab5cefc176723b19efe900b48b43ab4ef8946d0aedbe8f7736d9b306144b39",
-    "token_bytes_pt": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/token_bytes.pt",
+    "token_bytes_pt": "tokenizer/token_bytes.pt",
     "sha256_token_bytes_pt": "54bb3649b1b0a18783f1f027c03d274ee62306cae10c2b70611366f14c088656"
   },
   "validation": {

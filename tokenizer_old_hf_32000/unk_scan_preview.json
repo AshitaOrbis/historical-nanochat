@@ -1,7 +1,7 @@
 {
   "config": {
-    "shards_dir": "/home/user/historical-nanochat/data/shards",
-    "tokenizer_json": "/home/user/claudeworkspace/research/historical-nanochat/tokenizer/tokenizer.json",
+    "shards_dir": "data/shards",
+    "tokenizer_json": "tokenizer/tokenizer.json",
     "sample_every": 1,
     "max_docs": -1,
     "max_shards": 10,

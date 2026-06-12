@@ -183,4 +183,4 @@ plan/
 original-chatgpt-session.md           ← the conversation in which the project was conceived (Jan/Feb 2026)
 ```
 
-Phone-readable gist: https://gist.github.com/AshitaOrbis/REDACTED-GIST (secret, 8 docs)
+Phone-readable gist: [secret gist URL removed for privacy] (secret, 8 docs)

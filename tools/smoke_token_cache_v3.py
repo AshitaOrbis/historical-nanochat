@@ -16,7 +16,7 @@ Output:
   report/token_cache_v3_smoke.md
 
 Usage:
-  python tools/smoke_token_cache_v3.py --cache-dir /home/user/historical-nanochat/data/token_cache_v3
+  python tools/smoke_token_cache_v3.py --cache-dir data/token_cache_v3
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--cache-dir",
-        default="/home/user/historical-nanochat/data/token_cache_v3",
+        default="data/token_cache_v3",
     )
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--seq-len", type=int, default=128)

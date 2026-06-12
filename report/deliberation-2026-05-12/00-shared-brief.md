@@ -10,7 +10,7 @@
 
 `historical-nanochat` is a fork of Karpathy's `nanochat` (the single-3090-friendly minimal LLM training stack). The thesis: **train base models from scratch on rights-audited corpora that hard-cut at a pre-modern date** (e.g. ≤ 1913), so the model genuinely cannot know post-cutoff events, rather than fine-tuning a modern model into historical roleplay. Comparable to Ranke-4B (Zurich) and Owain Evans' "vintage LLMs" concept.
 
-Repo: `/home/user/claudeworkspace/research/historical-nanochat/`
+Repo: ``
 Data lives on ext4 at `~/historical-nanochat/data/` (~499 GB total, symlinked into the repo).
 
 ---
