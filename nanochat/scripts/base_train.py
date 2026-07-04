@@ -586,6 +586,21 @@ while True:
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
+        # The sequential cached loader yields per-rank cursors, but meta is saved by
+        # rank 0 only — without merging, ranks 1..N-1 would resume from their FIRST
+        # owned shard (silent repetition+omission, invisible to loss). Gather every
+        # rank's state and merge the per_rank maps before saving. (This branch is
+        # collective: the save condition is rank-independent, so all ranks reach it.)
+        merged_loader_state = dataloader_state_dict
+        if ddp and isinstance(dataloader_state_dict, dict) and "per_rank" in dataloader_state_dict:
+            gathered_states = [None] * ddp_world_size
+            torch.distributed.all_gather_object(gathered_states, dataloader_state_dict)
+            merged_per_rank = {}
+            for s in gathered_states:
+                if isinstance(s, dict):
+                    merged_per_rank.update(s.get("per_rank", {}))
+            merged_loader_state = dict(dataloader_state_dict)
+            merged_loader_state["per_rank"] = merged_per_rank
         save_checkpoint(
             checkpoint_dir,
             step,
@@ -599,7 +614,7 @@ while True:
                 "device_batch_size": args.device_batch_size,
                 "max_seq_len": args.max_seq_len,
                 "current_seq_len": current_seq_len,
-                "dataloader_state_dict": dataloader_state_dict,
+                "dataloader_state_dict": merged_loader_state,
                 "loop_state": { # all loop state (other than step) so that we can resume training
                     "min_val_bpb": min_val_bpb,
                     "smooth_train_loss": smooth_train_loss,

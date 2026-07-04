@@ -17,6 +17,7 @@ The loader treats the whole file as a flat token stream and slices (B*T+1)
 contiguous tokens per iteration, same packing logic as the parquet path.
 """
 
+import hashlib
 import json
 import os
 from collections import deque
@@ -26,6 +27,40 @@ import numpy as np
 import torch
 
 from nanochat.common import get_dist_info
+
+
+def _maybe_apply_shard_ordering(cache_dir: str, shard_entries: list[dict]):
+    """Design C: if a baked `shard_ordering.json` exists in cache_dir, reorder
+    shard_entries to match it. The ordering is a sidecar (manifest/provenance
+    are never modified) and carries the manifest's sha256 so a stale ordering
+    after a cache rebuild refuses to load instead of silently mis-serving.
+    Returns (entries, ordering_doc_or_None)."""
+    ordering_path = os.path.join(cache_dir, "shard_ordering.json")
+    if not os.path.exists(ordering_path):
+        return shard_entries, None
+    with open(ordering_path) as f:
+        doc = json.load(f)
+    manifest_path = os.path.join(cache_dir, "cache_manifest.json")
+    with open(manifest_path, "rb") as f:
+        manifest_sha = hashlib.sha256(f.read()).hexdigest()
+    if doc.get("manifest_sha256") != manifest_sha:
+        raise RuntimeError(
+            f"shard_ordering.json in {cache_dir} is STALE: it was baked against "
+            f"manifest sha256 {str(doc.get('manifest_sha256'))[:16]}... but the current "
+            f"cache_manifest.json is {manifest_sha[:16]}... — rebuild the ordering "
+            "(tools/build_balanced_ordering.py) or remove it."
+        )
+    by_name = {}
+    for e in shard_entries:
+        fn = e.get("filename") or f"shard_{e['shard_index']:05d}.bin"
+        by_name[fn] = e
+    order = doc.get("order", [])
+    if len(order) != len(shard_entries) or set(order) != set(by_name.keys()):
+        raise RuntimeError(
+            f"shard_ordering.json in {cache_dir} does not cover the manifest exactly "
+            f"(ordering has {len(order)} names, manifest has {len(shard_entries)} shards)."
+        )
+    return [by_name[n] for n in order], doc
 
 
 def _load_manifest(cache_dir: str) -> dict:
@@ -55,10 +90,20 @@ def cached_distributed_data_loader_with_state(
     """
     Infinite loader over mmap'd token cache files.
 
-    DDP sharding is per-shard (rank r reads shards where shard_idx % world_size == r)
-    with an in-shard offset so we don't overlap. This is simpler than the parquet
-    loader's row-group striping and slightly wastes some tokens at shard boundaries,
-    but for cached data that overhead is negligible.
+    DDP sharding is per-shard (rank r reads shards where shard position % world_size
+    == r) with an in-shard offset so we don't overlap. This is simpler than the
+    parquet loader's row-group striping and slightly wastes some tokens at shard
+    boundaries, but for cached data that overhead is negligible.
+
+    Design C: if cache_dir contains a baked `shard_ordering.json` (see
+    tools/build_balanced_ordering.py), shards are served in that stratified order
+    instead of shard_index order (split="all" only; fails loudly otherwise).
+
+    Resume state uses CONSUMED-cursor semantics: the per-rank (shard_idx, token_off)
+    in the state dict points at the next token the *trainer* has not consumed, not
+    at the loader's read-ahead position — resuming reproduces the identical token
+    stream (older checkpoints saved the read-ahead cursor and could silently skip
+    up to ~1M buffered tokens per rank on restart).
     """
     assert split in ("train", "val", "all"), "split must be 'train' | 'val' | 'all'"
     assert cache_dir is not None, "cache_dir is required"
@@ -79,6 +124,16 @@ def cached_distributed_data_loader_with_state(
     # "all": leave shard_entries as-is
     if not shard_entries:
         raise RuntimeError(f"No shards for split={split} in {cache_dir}")
+
+    # Design-C stratified ordering (sidecar). Only meaningful for the v4 two-dir
+    # layout where the whole dir is one split; refuse ambiguous legacy splits.
+    if split == "all":
+        shard_entries, _ordering_doc = _maybe_apply_shard_ordering(cache_dir, shard_entries)
+    elif os.path.exists(os.path.join(cache_dir, "shard_ordering.json")):
+        raise RuntimeError(
+            f"{cache_dir} has a shard_ordering.json but split={split!r}: the baked "
+            "ordering is only valid with split='all' (v4 layout). Refusing to guess."
+        )
 
     _, rank, _, world_size = get_dist_info()
     needed = B * T + 1
@@ -117,6 +172,53 @@ def cached_distributed_data_loader_with_state(
         fn = entry.get("filename") or f"shard_{entry['shard_index']:05d}.bin"
         return os.path.join(cache_dir, fn)
 
+    # Consumed-cursor bookkeeping: `segments` records which (position, offset,
+    # length) spans have been loaded into token_buffer but not yet handed to the
+    # trainer. The consumed cursor (what resume must restore) is the head of this
+    # queue; the loaded cursor (shard_cursor/token_cursor) runs ahead of it by up
+    # to one read chunk.
+    _itemsize = np.dtype(dtype).itemsize
+
+    def _entry_num_tokens(e):
+        t = e.get("tokens")
+        if t is None:  # legacy manifests without token counts: derive from file size
+            t = os.path.getsize(shard_path(e)) // _itemsize
+        return t
+
+    entry_tokens = [_entry_num_tokens(e) for e in shard_entries]
+    segments: deque = deque()  # each item: [position, offset, remaining]
+
+    def _normalize(pos, off):
+        # Canonical coordinates of the next unconsumed token: an owned position
+        # with off < shard length (skip foreign/finished shards, wrap at end).
+        while True:
+            if pos >= len(shard_entries):
+                pos, off = 0, 0
+                continue
+            if pos % world_size != rank:
+                pos, off = pos + 1, 0
+                continue
+            if off >= entry_tokens[pos]:
+                pos, off = pos + 1, 0
+                continue
+            return pos, off
+
+    def _consumed_state():
+        if segments:
+            pos, off, _ = segments[0]
+            return _normalize(pos, off)
+        return _normalize(shard_cursor, token_cursor)
+
+    def _advance_consumed(n):
+        while n > 0:
+            seg = segments[0]
+            take = n if n < seg[2] else seg[2]
+            seg[1] += take
+            seg[2] -= take
+            n -= take
+            if seg[2] == 0:
+                segments.popleft()
+
     while True:
         while len(token_buffer) < needed:
             if shard_cursor >= len(shard_entries):
@@ -124,7 +226,7 @@ def cached_distributed_data_loader_with_state(
                 shard_cursor = 0
                 token_cursor = 0
             entry = shard_entries[shard_cursor]
-            # Rank-shard ownership: only rank (shard_cursor % world_size) reads this shard.
+            # Rank-shard ownership: only rank (position % world_size) reads this shard.
             if shard_cursor % world_size != rank:
                 shard_cursor += 1
                 token_cursor = 0
@@ -132,6 +234,11 @@ def cached_distributed_data_loader_with_state(
 
             mm = np.memmap(shard_path(entry), dtype=dtype, mode="r")
             total = mm.shape[0]
+            if total != entry_tokens[shard_cursor]:
+                raise RuntimeError(
+                    f"{shard_path(entry)}: on-disk token count {total} != manifest "
+                    f"tokens {entry_tokens[shard_cursor]} — cache and manifest disagree."
+                )
             if token_cursor >= total:
                 shard_cursor += 1
                 token_cursor = 0
@@ -141,6 +248,7 @@ def cached_distributed_data_loader_with_state(
             # blowing out memory on very large shards.
             chunk = 1_000_000
             end = min(total, token_cursor + chunk)
+            segments.append([shard_cursor, token_cursor, end - token_cursor])
             token_buffer.extend(mm[token_cursor:end].tolist())
             token_cursor = end
             if token_cursor >= total:
@@ -149,15 +257,19 @@ def cached_distributed_data_loader_with_state(
 
         # Pop B*T+1 tokens for this iteration.
         ids = [token_buffer.popleft() for _ in range(needed)]
+        _advance_consumed(needed)
         scratch = torch.tensor(ids, dtype=torch.long, pin_memory=use_cuda)
         inputs = scratch[:-1].view(B, T).to(device=device, non_blocking=use_cuda)
         targets = scratch[1:].view(B, T).to(device=device, non_blocking=use_cuda)
-        # Per-rank state so each rank's resume cursor is independent.
+        # Per-rank CONSUMED state so each rank's resume reproduces the exact
+        # unconsumed continuation (read-ahead tokens still in the buffer are
+        # re-read on resume, never skipped).
+        c_pos, c_off = _consumed_state()
         state = {
-            "per_rank": {str(rank): {"shard_idx": shard_cursor, "token_off": token_cursor}},
+            "per_rank": {str(rank): {"shard_idx": c_pos, "token_off": c_off}},
             # Also include the legacy keys for backwards compat with older checkpoints.
-            "shard_idx": shard_cursor,
-            "token_off": token_cursor,
+            "shard_idx": c_pos,
+            "token_off": c_off,
         }
         yield inputs, targets, state
 

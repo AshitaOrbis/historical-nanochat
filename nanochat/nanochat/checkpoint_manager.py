@@ -20,24 +20,63 @@ def log0(message):
     if int(os.environ.get('RANK', 0)) == 0:
         logger.info(message)
 
+def _atomic_torch_save(obj, path):
+    """torch.save to a temp file, then atomic rename. A crash or a concurrent
+    sidecar sync can never observe a partially-written file under its final name."""
+    tmp = path + ".tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+def _write_complete_sentinel(checkpoint_dir, step, world_size, has_optimizer):
+    """Write complete_<step>.json AFTER verifying every expected file of this
+    checkpoint exists. Sidecar sync tooling must only copy checkpoints that have
+    this sentinel; resume should prefer the newest COMPLETE step."""
+    expected = [f"model_{step:06d}.pt", f"meta_{step:06d}.json"]
+    if has_optimizer:
+        expected += [f"optim_{step:06d}_rank{r:d}.pt" for r in range(world_size)]
+    files = {}
+    for name in expected:
+        path = os.path.join(checkpoint_dir, name)
+        if not os.path.exists(path):
+            raise RuntimeError(f"checkpoint step {step} incomplete: missing {name}; not writing sentinel")
+        files[name] = os.path.getsize(path)
+    sentinel_path = os.path.join(checkpoint_dir, f"complete_{step:06d}.json")
+    tmp = sentinel_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"step": step, "world_size": world_size, "files": files}, f, indent=2)
+    os.replace(tmp, sentinel_path)
+    logger.info(f"Checkpoint step {step} complete: {sentinel_path}")
+
+
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
     if rank == 0:
         os.makedirs(checkpoint_dir, exist_ok=True)
         # Save the model state parameters
         model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
-        torch.save(model_data, model_path)
+        _atomic_torch_save(model_data, model_path)
         logger.info(f"Saved model parameters to: {model_path}")
         # Save the metadata dict as json
         meta_path = os.path.join(checkpoint_dir, f"meta_{step:06d}.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
+        tmp_meta = meta_path + ".tmp"
+        with open(tmp_meta, "w", encoding="utf-8") as f:
             json.dump(meta_data, f, indent=2)
+        os.replace(tmp_meta, meta_path)
         logger.info(f"Saved metadata to: {meta_path}")
     # Note that optimizer state is sharded across ranks, so each rank must save its own.
     if optimizer_data is not None:
         os.makedirs(checkpoint_dir, exist_ok=True)
         optimizer_path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
-        torch.save(optimizer_data, optimizer_path)
+        _atomic_torch_save(optimizer_data, optimizer_path)
         logger.info(f"Saved optimizer state to: {optimizer_path}")
+    # All files land atomically; now mark the checkpoint complete. Under DDP,
+    # wait for every rank's optimizer shard before rank 0 writes the sentinel.
+    world_size = 1
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        world_size = torch.distributed.get_world_size()
+        torch.distributed.barrier()
+    if rank == 0:
+        _write_complete_sentinel(checkpoint_dir, step, world_size, optimizer_data is not None)
 
 def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
     # Load the model state
@@ -115,10 +154,17 @@ def find_largest_model(checkpoints_dir):
 
 
 def find_last_step(checkpoint_dir):
-    # Look into checkpoint_dir and find model_<step>.pt with the highest step
+    # Prefer the newest step with a completion sentinel (written after every
+    # rank's file landed). Fall back to the legacy highest model_*.pt scan for
+    # checkpoint dirs that predate the sentinel, with a warning.
+    sentinels = glob.glob(os.path.join(checkpoint_dir, "complete_*.json"))
+    if sentinels:
+        return int(max(os.path.basename(f).split("_")[-1].split(".")[0] for f in sentinels))
     checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "model_*.pt"))
     if not checkpoint_files:
         raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
+    log0(f"WARNING: no complete_*.json sentinels in {checkpoint_dir}; "
+         "falling back to highest model_*.pt (cannot verify the checkpoint is complete)")
     last_step = int(max(os.path.basename(f).split("_")[-1].split(".")[0] for f in checkpoint_files))
     return last_step
 
