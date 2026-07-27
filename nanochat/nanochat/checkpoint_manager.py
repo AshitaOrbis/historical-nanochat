@@ -78,6 +78,22 @@ def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data,
     if rank == 0:
         _write_complete_sentinel(checkpoint_dir, step, world_size, optimizer_data is not None)
 
+def save_bf16_snapshot(checkpoint_dir, step, model_state):
+    """Model-only bf16 trajectory snapshot (Sol P0-7): ~2 GiB for d26 vs ~12 GiB
+    for a full checkpoint. NOT resumable (no optimizer state) — these exist so
+    warmdown-start and the other trajectory marks survive without retaining
+    full checkpoints. Rank 0 only; atomic."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    snap = {
+        k: (v.detach().to(torch.bfloat16) if v.is_floating_point() else v.detach())
+        for k, v in model_state.items()
+    }
+    path = os.path.join(checkpoint_dir, f"snapshot_bf16_{step:06d}.pt")
+    _atomic_torch_save(snap, path)
+    logger.info(f"Saved bf16 model snapshot to: {path}")
+    return path
+
+
 def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
     # Load the model state
     model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")

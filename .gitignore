@@ -70,6 +70,10 @@ Thumbs.db
 .env
 *.env
 secrets/
+.hyperbolic_key
+.hyperbolic_instance
+.vast_key
+.vast_instance
 
 # Temporary files
 tmp/
@@ -77,3 +81,4 @@ temp/
 *.tmp
 /data
 context/chatgpt-conversations/_ALL_TITLES.txt
+runs/launch_2026-07-06/.monitor-webhook-env

@@ -33,7 +33,8 @@ from nanochat.dataloader_cached import (
 )
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
-from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
+from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint, save_bf16_snapshot
+from nanochat.train_guards import parse_steps_list, load_canaries, check_canary, assert_expected_resolved
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from scripts.base_eval import evaluate_model
@@ -72,7 +73,23 @@ parser.add_argument("--max_steps", type=int, default=-1,
                          "--num_iterations (or --target_param_data_ratio). Useful for smoke tests that "
                          "simulate long-run dynamics without sitting through warmdown.")
 parser.add_argument("--diagnostic_logging", action="store_true",
-                    help="Log grad norm, param norm, per-group LR, shard provenance each step.")
+                    help="Log grad norm, param norm, per-group LR, shard provenance (see --diagnostic_every).")
+parser.add_argument("--diagnostic_every", type=int, default=25,
+                    help="Cadence for the EXPENSIVE diagnostics (full grad/param norms, per-group "
+                         "LRs). The cheap non-finite guard runs every step regardless.")
+parser.add_argument("--canary_file", type=str, default=None,
+                    help="JSON of traversal canaries (Tier-1). Validated against ordering SHA, "
+                         "world size, batch geometry at startup; asserted per-yield at runtime. "
+                         "A mismatch aborts the run (wrong corpus traversal).")
+parser.add_argument("--expect_json", type=str, default=None,
+                    help="JSON of expected RESOLVED config (model dims, per-group initial LRs incl. "
+                         "the 1/sqrt(d_model/768) AdamW scale, tokenizer/ordering hashes). "
+                         "Asserted at startup; any mismatch refuses to train.")
+parser.add_argument("--save_at_steps", type=str, default="",
+                    help="Comma-separated extra steps for FULL checkpoints (besides --save_every).")
+parser.add_argument("--snapshot_at_steps", type=str, default="",
+                    help="Comma-separated steps for bf16 MODEL-ONLY trajectory snapshots "
+                         "(~2 GiB for d26; not resumable).")
 parser.add_argument("--final_lr_frac", type=float, default=0.0, help="final LR as fraction of initial LR")
 parser.add_argument("--resume_from_step", type=int, default=-1, help="resume training from this step (-1 = disable)")
 # Memory / throughput knobs (3090-friendly)
@@ -358,6 +375,101 @@ if resuming:
     del optimizer_data # free up the memory
 
 # -----------------------------------------------------------------------------
+# Runtime integrity gates (Sol P0-7 / GPT Pro round-4 launch assertions):
+# assert the RESOLVED configuration (not CLI values), then arm traversal canaries.
+save_at_steps = parse_steps_list(args.save_at_steps)
+snapshot_at_steps = parse_steps_list(args.snapshot_at_steps)
+
+_ordering_order_sha = None
+_ord_path = None
+if args.token_cache_dir:
+    _ord_path = os.path.join(args.token_cache_dir, "shard_ordering.json")
+    if os.path.exists(_ord_path):
+        with open(_ord_path) as _f:
+            _ordering_order_sha = json.load(_f).get("order_sha256")
+
+def _sha256_file(p):
+    import hashlib
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+if args.expect_json:
+    with open(args.expect_json) as _f:
+        _expected = json.load(_f)
+    _tok_dir = os.path.join(base_dir, "tokenizer")
+    resolved_config = {
+        "model": {
+            "n_layer": num_layers, "n_embd": model_dim, "n_head": num_heads,
+            "n_kv_head": num_kv_heads, "vocab_size": vocab_size,
+            "num_params": num_params, "max_seq_len": args.max_seq_len,
+        },
+        "optimizer": {
+            "dmodel_lr_scale": (model_dim / 768) ** -0.5,  # printed by gpt.py:266; asserted here
+            "adamw_groups_initial_lr": [g["initial_lr"] for g in adamw_optimizer.param_groups],
+            "adamw_betas": [list(g["betas"]) for g in adamw_optimizer.param_groups],
+            "adamw_weight_decay": [g["weight_decay"] for g in adamw_optimizer.param_groups],
+            "muon_groups_initial_lr": [g["initial_lr"] for g in muon_optimizer.param_groups],
+            "batch_lr_scale": batch_lr_scale,
+        },
+        "schedule": {
+            "num_iterations": num_iterations, "total_batch_size": args.total_batch_size,
+            "device_batch_size": args.device_batch_size, "grad_accum_steps": grad_accum_steps,
+            "warmup_ratio": args.warmup_ratio, "warmdown_ratio": args.warmdown_ratio,
+            "final_lr_frac": args.final_lr_frac,
+        },
+        "tokenizer": {
+            "vocab_size": vocab_size, "bos_id": _bos_id,
+            "sha256_tokenizer_pkl": _sha256_file(os.path.join(_tok_dir, "tokenizer.pkl")),
+            "sha256_token_bytes_pt": _sha256_file(os.path.join(_tok_dir, "token_bytes.pt")),
+        },
+        "data": {
+            "ordering_order_sha256": _ordering_order_sha,
+            "ordering_file_sha256": _sha256_file(_ord_path) if (_ord_path and os.path.exists(_ord_path)) else None,
+        },
+        "runtime": {"device_type": device_type},
+    }
+    _checked = assert_expected_resolved(_expected, resolved_config)
+    print0(f"[expect] {len(_checked)} resolved-config assertions PASSED against {args.expect_json}")
+    if master_process and args.benchmark_csv:
+        _res_path = os.path.join(
+            os.path.dirname(os.path.abspath(args.benchmark_csv)),
+            f"resolved_config_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json")
+        with open(_res_path, "w") as _f:
+            json.dump(resolved_config, _f, indent=1)
+        print0(f"[expect] resolved config recorded to {_res_path}")
+
+# consumed_yields counts trained microbatches; on resume the checkpoint step
+# fixes it exactly (step * grad_accum_steps yields were consumed).
+consumed_yields = grad_accum_steps * (args.resume_from_step if resuming else 0)
+canary_by_yield = {}
+if args.canary_file:
+    if args.seq_len_late > 0:
+        raise RuntimeError("--canary_file is incompatible with --seq_len_late "
+                           "(yield counting changes at the T switch)")
+    canary_by_yield = load_canaries(
+        args.canary_file,
+        needed=args.device_batch_size * args.max_seq_len + 1,
+        world_size=ddp_world_size,
+        grad_accum=grad_accum_steps,
+        ordering_sha256=_ordering_order_sha,
+    )
+    _pending = sum(1 for k in canary_by_yield if k > consumed_yields)
+    print0(f"[canary] loaded {len(canary_by_yield)} canaries from {args.canary_file}; "
+           f"{_pending} ahead of yield {consumed_yields}")
+
+def _write_abort_record(kind, payload):
+    """Small diagnostic record on abort (Sol P0-6): never a resumable checkpoint."""
+    if master_process:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        path = os.path.join(checkpoint_dir, f"abort_{kind}_{step:06d}.json")
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=1)
+        print0(f"[abort] diagnostic record written to {path}")
+
+# -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
 tokens_dir = os.path.join(base_dir, "tokenized_data")
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
@@ -402,7 +514,13 @@ def build_val_loader_fn(B, T):
 
 train_loader = build_train_loader(args.device_batch_size, current_seq_len, dataloader_resume_state_dict)
 build_val_loader = build_val_loader_fn(args.device_batch_size, current_seq_len)
-x, y, dataloader_state_dict = next(train_loader) # kick off load of the very first batch of data
+# Two cursors, deliberately distinct (P0-1): `after_current_loader_state` travels
+# with the held prefetch (x, y) and points PAST tokens the model has NOT trained
+# on yet; `consumed_loader_state` is the cursor of the last batch actually
+# trained. Checkpoints must save the consumed cursor — saving the prefetch
+# cursor makes every resume silently skip one microbatch (B*T+1 tokens).
+consumed_loader_state = dataloader_resume_state_dict
+x, y, after_current_loader_state = next(train_loader) # kick off load of the very first batch of data
 
 # -----------------------------------------------------------------------------
 # Set up hyperparameter schedulers
@@ -525,9 +643,61 @@ while True:
         )
         grad_accum_steps = args.total_batch_size // new_tokens_per_fwdbwd
         print0(f"  new grad_accum_steps: {grad_accum_steps}")
-        train_loader = build_train_loader(args.device_batch_size, current_seq_len, dataloader_state_dict)
+        # Rebuild from the CONSUMED cursor: the held prefetch (x, y) was never
+        # trained on, so the new loader must re-serve those tokens at the new T.
+        train_loader = build_train_loader(args.device_batch_size, current_seq_len, consumed_loader_state)
         build_val_loader = build_val_loader_fn(args.device_batch_size, current_seq_len)
-        x, y, dataloader_state_dict = next(train_loader)  # prime the new loader
+        x, y, after_current_loader_state = next(train_loader)  # prime the new loader
+
+    # save checkpoint FIRST (Sol P0-6): the recovery checkpoint must land BEFORE
+    # any eval/sample hook can throw. At the end of the run, every save_every
+    # steps, or at an explicit --save_at_steps mark; never at the first step or
+    # the resume step. (meta's val_bpb is from the previous eval event.)
+    if last_step or (step > 0 and step != args.resume_from_step and (
+            (args.save_every > 0 and step % args.save_every == 0) or step in save_at_steps)):
+        # The sequential cached loader yields per-rank cursors, but meta is saved by
+        # rank 0 only — without merging, ranks 1..N-1 would resume from their FIRST
+        # owned shard (silent repetition+omission, invisible to loss). Gather every
+        # rank's state and merge the per_rank maps before saving. (This branch is
+        # collective: the save condition is rank-independent, so all ranks reach it.)
+        merged_loader_state = consumed_loader_state
+        if ddp and isinstance(consumed_loader_state, dict) and "per_rank" in consumed_loader_state:
+            gathered_states = [None] * ddp_world_size
+            torch.distributed.all_gather_object(gathered_states, consumed_loader_state)
+            merged_per_rank = {}
+            for s in gathered_states:
+                if isinstance(s, dict):
+                    merged_per_rank.update(s.get("per_rank", {}))
+            merged_loader_state = dict(consumed_loader_state)
+            merged_loader_state["per_rank"] = merged_per_rank
+        save_checkpoint(
+            checkpoint_dir,
+            step,
+            orig_model.state_dict(), # model parameters
+            [opt.state_dict() for opt in optimizers], # optimizer states
+            { # metadata saved as json
+                "step": step,
+                "val_bpb": val_bpb, # loss at last eval event (previous boundary)
+                "model_config": model_config_kwargs,
+                "user_config": user_config, # inputs to the training script
+                "device_batch_size": args.device_batch_size,
+                "max_seq_len": args.max_seq_len,
+                "current_seq_len": current_seq_len,
+                "consumed_yields": consumed_yields,
+                "dataloader_state_dict": merged_loader_state,
+                "loop_state": { # all loop state (other than step) so that we can resume training
+                    "min_val_bpb": min_val_bpb,
+                    "smooth_train_loss": smooth_train_loss,
+                    "total_training_time": total_training_time,
+                },
+            },
+            rank=ddp_rank,
+        )
+
+    # bf16 model-only trajectory snapshots (Sol P0-7): warmdown-start and the
+    # other trajectory marks survive without retaining full checkpoints.
+    if snapshot_at_steps and step in snapshot_at_steps and step != args.resume_from_step and master_process:
+        save_bf16_snapshot(checkpoint_dir, step, orig_model.state_dict())
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if args.eval_every > 0 and (last_step or step % args.eval_every == 0):
@@ -551,80 +721,52 @@ while True:
     # use the original uncompiled model because the inputs keep changing shape
     results = {}
     if args.core_metric_every > 0 and (last_step or (step > 0 and step % args.core_metric_every == 0)):
-        model.eval()
-        with autocast_ctx:
-            results = evaluate_model(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
-        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
-        wandb_run.log({
-            "step": step,
-            "total_training_flops": flops_so_far,
-            "core_metric": results["core_metric"],
-            "centered_results": results["centered_results"],
-        })
-        model.train()
+        # Best-effort (Sol P0-6): the recovery checkpoint already landed above;
+        # a CORE-eval failure must not take down the run.
+        try:
+            model.eval()
+            with autocast_ctx:
+                results = evaluate_model(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
+            print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
+            wandb_run.log({
+                "step": step,
+                "total_training_flops": flops_so_far,
+                "core_metric": results["core_metric"],
+                "centered_results": results["centered_results"],
+            })
+        except Exception as _core_err:
+            results = {}
+            print0(f"WARNING: CORE eval failed at step {step} ({_core_err}); continuing")
+        finally:
+            model.train()
 
     # once in a while: sample from the model (only on master process)
     # use the original uncompiled model because the inputs keep changing shape
     if args.sample_every > 0 and master_process and (last_step or (step > 0 and step % args.sample_every == 0)):
-        model.eval()
-        prompts = [
-            "The capital of France is",
-            "The chemical symbol of gold is",
-            "If yesterday was Friday, then tomorrow will be",
-            "The opposite of hot is",
-            "The planets of the solar system are:",
-            "My favorite color is",
-            "If 5*x + 3 = 13, then x is",
-        ]
-        engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
-        for prompt in prompts:
-            tokens = tokenizer(prompt, prepend="<|bos|>")
-            with autocast_ctx:
-                sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
-            print0(tokenizer.decode(sample[0]))
-        model.train()
+        # Best-effort (Sol P0-6): sampling is a diagnostic, never load-bearing.
+        try:
+            model.eval()
+            prompts = [
+                "The capital of France is",
+                "The chemical symbol of gold is",
+                "If yesterday was Friday, then tomorrow will be",
+                "The opposite of hot is",
+                "The planets of the solar system are:",
+                "My favorite color is",
+                "If 5*x + 3 = 13, then x is",
+            ]
+            engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
+            for prompt in prompts:
+                tokens = tokenizer(prompt, prepend="<|bos|>")
+                with autocast_ctx:
+                    sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
+                print0(tokenizer.decode(sample[0]))
+        except Exception as _sample_err:
+            print0(f"WARNING: sampling failed at step {step} ({_sample_err}); continuing")
+        finally:
+            model.train()
 
-    # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
-    if last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
-        # The sequential cached loader yields per-rank cursors, but meta is saved by
-        # rank 0 only — without merging, ranks 1..N-1 would resume from their FIRST
-        # owned shard (silent repetition+omission, invisible to loss). Gather every
-        # rank's state and merge the per_rank maps before saving. (This branch is
-        # collective: the save condition is rank-independent, so all ranks reach it.)
-        merged_loader_state = dataloader_state_dict
-        if ddp and isinstance(dataloader_state_dict, dict) and "per_rank" in dataloader_state_dict:
-            gathered_states = [None] * ddp_world_size
-            torch.distributed.all_gather_object(gathered_states, dataloader_state_dict)
-            merged_per_rank = {}
-            for s in gathered_states:
-                if isinstance(s, dict):
-                    merged_per_rank.update(s.get("per_rank", {}))
-            merged_loader_state = dict(dataloader_state_dict)
-            merged_loader_state["per_rank"] = merged_per_rank
-        save_checkpoint(
-            checkpoint_dir,
-            step,
-            orig_model.state_dict(), # model parameters
-            [opt.state_dict() for opt in optimizers], # optimizer states
-            { # metadata saved as json
-                "step": step,
-                "val_bpb": val_bpb, # loss at last step
-                "model_config": model_config_kwargs,
-                "user_config": user_config, # inputs to the training script
-                "device_batch_size": args.device_batch_size,
-                "max_seq_len": args.max_seq_len,
-                "current_seq_len": current_seq_len,
-                "dataloader_state_dict": merged_loader_state,
-                "loop_state": { # all loop state (other than step) so that we can resume training
-                    "min_val_bpb": min_val_bpb,
-                    "smooth_train_loss": smooth_train_loss,
-                    "total_training_time": total_training_time,
-                },
-            },
-            rank=ddp_rank,
-        )
-
-    # termination conditions (TODO: possibly also add loss explosions etc.)
+    # termination (loss explosions abort mid-step via the non-finite guard below)
     if last_step:
         break
 
@@ -634,21 +776,65 @@ while True:
     synchronize()
     t0 = time.time()
     loader_wait_s = 0.0  # cumulative time the GPU-side loop spent blocked on next(train_loader)
+    micro_losses = []
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
             loss = model(x, y)
         train_loss = loss.detach() # for logging
+        micro_losses.append(train_loss)
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()
+        # (x, y) has now been trained on: its cursor becomes checkpoint-safe.
+        consumed_loader_state = after_current_loader_state
+        consumed_yields += 1
+        # Traversal canary (Sol P0-7): asserted per-yield, so mid-accumulation
+        # canaries are exact — no optimizer-boundary flooring involved.
+        if canary_by_yield:
+            _canary = canary_by_yield.get(consumed_yields)
+            if _canary is not None:
+                _mismatch = check_canary(_canary, consumed_loader_state, ddp_rank)
+                if _mismatch:
+                    _write_abort_record("canary", {
+                        "step": step, "after_yield": consumed_yields,
+                        "mismatch": _mismatch, "canary": _canary,
+                        "state": {k: v for k, v in (consumed_loader_state or {}).items()
+                                  if k in ("per_rank", "identity")},
+                    })
+                    raise RuntimeError(
+                        f"CANARY MISMATCH after yield {consumed_yields} (step {step}): "
+                        f"{_mismatch} — the corpus traversal has diverged from the "
+                        "Tier-1 trace; do NOT continue or resume past this point.")
+                print0(f"[canary] PASS after_yield={consumed_yields} "
+                       f"(pos={_canary['position']}, off={_canary['offset']})")
         # Time the loader fetch. This under-reports true loader cost when the loader
         # runs on a background thread, but captures the GPU-visible stall when the
         # loader can't keep up.
         _tl0 = time.time()
-        x, y, dataloader_state_dict = next(train_loader) # prefetch next batch while GPU is busy
+        x, y, after_current_loader_state = next(train_loader) # prefetch next batch while GPU is busy
         loader_wait_s += time.time() - _tl0
-    # Optional diagnostic: grad norm, param norm, NaN/inf detection BEFORE opt.step
+    # Cheap EVERY-STEP non-finite guard (Sol P0-6): abort BEFORE optimizer.step()
+    # so a NaN/Inf loss or gradient can never poison optimizer state and train
+    # on unattended. One host sync per step.
+    _finite_checks = [torch.isfinite(_l) for _l in micro_losses]
+    _finite_checks += [torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None]
+    if not torch.stack(_finite_checks).all().item():
+        _bad_losses = [float(_l.item()) for _l in micro_losses]
+        _bad_grads = [n for n, p in model.named_parameters()
+                      if p.grad is not None and not torch.isfinite(p.grad).all().item()]
+        _write_abort_record("nonfinite", {
+            "step": step, "consumed_yields": consumed_yields,
+            "micro_losses": _bad_losses, "nonfinite_grad_params": _bad_grads,
+            "lrm": get_lr_multiplier(step),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+        raise RuntimeError(
+            f"NON-FINITE loss/gradient at step {step} (losses={_bad_losses}, "
+            f"{len(_bad_grads)} bad grad tensors) — aborting BEFORE optimizer.step(); "
+            "no checkpoint written for this step. Inspect the abort_nonfinite record; "
+            "resume from the last complete checkpoint only after diagnosis.")
+    # Optional diagnostic: full grad/param norms on the --diagnostic_every cadence
     diag = None
-    if args.diagnostic_logging:
+    if args.diagnostic_logging and step % max(1, args.diagnostic_every) == 0:
         with torch.no_grad():
             grad_sq = 0.0
             param_sq = 0.0
@@ -724,17 +910,24 @@ while True:
             for _g in _opt.param_groups:
                 _grp_lrs.append(_g.get("lr", 0.0))
         # Source-family identification: parallel_family_cache puts family on the
-        # state dict directly; sequential_cache uses shard_idx + provenance lookup.
-        _state = dataloader_state_dict or {}
+        # state dict directly; sequential_cache uses the state's IDENTITY fields.
+        # Report the CONSUMED state — what the model just trained on, not the
+        # prefetch. NB (Sol P0-7): the legacy shard_idx is a position in the
+        # baked ordering, NOT a manifest shard index — provenance must key on
+        # identity.manifest_shard_index or it produces false evidence.
+        _state = consumed_loader_state or {}
         if _state.get("loader_strategy") == "parallel_family_cache":
             _fam = _state.get("current_microbatch_family", "?")
             _cursors = _state.get("family_cursors", {})
             _src = f"fam_cursors={_cursors}"
         else:
-            _shard_idx = _state.get("shard_idx", -1)
-            _prov = _shard_provenance_lookup.get(_shard_idx, {})
+            _ident = _state.get("identity", {})
+            _mf_idx = _ident.get("manifest_shard_index")
+            _prov = _shard_provenance_lookup.get(_mf_idx, {}) if _mf_idx is not None else {}
             _fam = _prov.get("family", "?")
-            _src = f"shard_idx={_shard_idx} src={_prov.get('source_file','?')}"
+            _src = (f"ord_pos={_ident.get('ordering_position', '?')} "
+                    f"manifest_idx={_mf_idx if _mf_idx is not None else '?'} "
+                    f"file={_ident.get('filename', '?')} off={_ident.get('token_off', '?')}")
         print0(
             f"[diag] step {step:05d} | raw_loss: {_train_loss_raw:.4f} | ema_loss: {debiased_smooth_loss:.4f}"
             f" | grad_norm: {diag['grad_norm']:.4f} | param_norm: {diag['param_norm']:.3e}"

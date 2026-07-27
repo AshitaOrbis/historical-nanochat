@@ -13,7 +13,12 @@ python -m scripts.chat_web
 - 4 GPUs
 python -m scripts.chat_web --num-gpus 4
 
-To chat, open the URL printed in the console. (If on cloud box, make sure to use public IP)
+To chat, open the URL printed in the console.
+
+The server binds to 127.0.0.1 by default, so it is reachable only from the machine it
+runs on. To expose it on a LAN or a cloud box, pass --host 0.0.0.0 explicitly (and then
+use the box's public IP). There is no authentication on any endpoint, so only do that on
+a network you control.
 
 Endpoints:
   GET  /           - Chat UI
@@ -71,7 +76,7 @@ parser.add_argument('-s', '--step', type=int, default=None, help='Step to load')
 parser.add_argument('-p', '--port', type=int, default=8000, help='Port to run the server on')
 parser.add_argument('-d', '--dtype', type=str, default='bfloat16', choices=['float32', 'bfloat16'])
 parser.add_argument('--device-type', type=str, default='', choices=['cuda', 'cpu', 'mps'], help='Device type for evaluation: cuda|cpu|mps. empty => autodetect')
-parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the server to')
+parser.add_argument('--host', type=str, default='127.0.0.1', help='Host to bind the server to (default: loopback only; pass --host 0.0.0.0 to expose on the LAN)')
 args = parser.parse_args()
 
 # Configure logging for conversation traffic

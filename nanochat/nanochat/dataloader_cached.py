@@ -265,11 +265,22 @@ def cached_distributed_data_loader_with_state(
         # unconsumed continuation (read-ahead tokens still in the buffer are
         # re-read on resume, never skipped).
         c_pos, c_off = _consumed_state()
+        c_entry = shard_entries[c_pos]
         state = {
             "per_rank": {str(rank): {"shard_idx": c_pos, "token_off": c_off}},
             # Also include the legacy keys for backwards compat with older checkpoints.
             "shard_idx": c_pos,
             "token_off": c_off,
+            # Explicit identity fields (Sol P0-7): shard_idx above is a POSITION
+            # IN THE BAKED ORDERING, not a manifest shard index. Diagnostics and
+            # provenance must key on manifest_shard_index; conflating the two
+            # produced false "provenance sane" evidence.
+            "identity": {
+                "ordering_position": c_pos,
+                "manifest_shard_index": c_entry["shard_index"],
+                "filename": c_entry.get("filename") or f"shard_{c_entry['shard_index']:05d}.bin",
+                "token_off": c_off,
+            },
         }
         yield inputs, targets, state
 

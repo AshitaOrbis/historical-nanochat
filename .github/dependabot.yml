@@ -1,0 +1,29 @@
+# Dependabot configuration.
+#
+# Alerts were already on for this repo, so vulnerabilities arrived as a list on the
+# Security tab that nobody was on the hook for — 42 open HIGH by 2026-07-27. This file
+# is the difference between a list and a reviewable pull request.
+#
+# Only /nanochat is registered: it is the one directory with a lockfile (nanochat/uv.lock),
+# and it is where every alert to date has come from. The repo-root pyproject.toml has no
+# lock, so registering it would produce constraint-bumping PRs with no resolution behind
+# them — noise rather than coverage.
+
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/nanochat"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # One PR for the routine stream; majors stay individual because a major is a
+      # decision (transformers 4 -> 5 took a test run and a smoke test), not a merge.
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
