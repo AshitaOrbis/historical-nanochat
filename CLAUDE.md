@@ -16,7 +16,7 @@ Personal research program by an individual independent researcher. Models are tr
 
 ## Current State (as of 2026-06-09)
 
-- **v1 training run COMPLETE (2026-05-10):** 615.6M-param d22 nanochat-style transformer, 70,455 steps, ~16.18B unique training tokens, single RTX 3090. Artifact: `model_070455.pt` under `base_checkpoints/`, plus full governance trail in `report/`.
+- **v1 training run COMPLETE (2026-05-10):** 615.6M-param d22 nanochat-style transformer, 70,455 steps, ~18.18B unique training tokens (corrected 2026-08-01 from a mis-derived 16.18B; see the d22 field report's revision notes), single RTX 3090. Artifact: `model_070455.pt` under `base_checkpoints/`, plus full governance trail in `report/`.
 - **Probe harness built (`probes/`):** `harness.py` (NanochatModel 615M + GPTQModel for quantized 13B talkie + HFModel), `probe_sets.py` (Family F closure + falsifiers, Family B minimal pairs), `run_pilot.py`. Length-normalized per-byte logprob scoring, boundary-stable, GPT-Pro-validated loading recipe for talkie-1930 (bf16 + xlr8harder's TalkieTokenizer + Triton backend).
 - **Solid pilot findings:** the 615M model coherently inhabits ~1910; it shows a providence/duty closure posture; gpt2 (modern web) leans therapeutic. Pre-pilot signal only — scale/corpus/tokenizer confounds remain.
 - **Retracted claims — do NOT inherit** (corrections in `runs/probe_pilot_2026-06-09_3anchor/FINDINGS.md`):

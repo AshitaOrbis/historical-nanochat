@@ -38,11 +38,12 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
-# target torch to cuda 12.8 or CPU
+# target torch to cuda 13.0 or CPU (cu128 index tops out below the 2.13 security
+# fix — Dependabot alert 72; <host> already runs cu130 runtimes)
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu128", extra = "gpu" },
+    { index = "pytorch-cu130", extra = "gpu" },
 ]
 
 [[tool.uv.index]]
@@ -51,16 +52,16 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [project.optional-dependencies]
 cpu = [
-    "torch>=2.9.1",
+    "torch>=2.13.0",
 ]
 gpu = [
-    "torch>=2.9.1",
+    "torch>=2.13.0",
 ]
 
 [tool.uv]
