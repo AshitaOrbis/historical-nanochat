@@ -33,6 +33,11 @@ from nanochat.dataloader_cached import (
 )
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
+from nanochat.artifact_guard import (
+    validate_cache_tokenizer_identity,
+    validate_identity_binding,
+    validate_tokenizer_artifacts,
+)
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint, save_bf16_snapshot
 from nanochat.train_guards import parse_steps_list, load_canaries, check_canary, assert_expected_resolved
 from nanochat.loss_eval import evaluate_bpb
@@ -181,39 +186,25 @@ token_bytes = get_token_bytes(device=device)
 vocab_size = tokenizer.get_vocab_size()
 print0(f"Vocab size: {vocab_size:,}")
 
-# ---- Startup sanity assertions (Gate 4) ------------------------------------
-# Catch misconfigurations BEFORE spending compute on a corrupt state. Cheap,
-# noisy on failure, quiet on success. Fail-fast beats silent-wrong.
-assert int(token_bytes.shape[0]) == vocab_size, (
-    f"token_bytes length ({int(token_bytes.shape[0])}) != tokenizer vocab_size ({vocab_size}). "
-    "Regenerate token_bytes.pt via tools/recover_tokenizer_artifacts.py or scripts.tok_train."
-)
+# ---- Mandatory artifact identity gate --------------------------------------
+# This runs for every launcher, independently of the optional --expect_json
+# resolved-config guard. Missing, malformed, stale, or mismatched artifacts stop
+# before model allocation or cache traversal.
+base_dir = get_base_dir()
 _bos_id = tokenizer.get_bos_token_id()
-print0(f"BOS token id: {_bos_id}")
-# If a tokenizer manifest exists next to the tokenizer files, surface its SHA for reproducibility.
-# We re-derive the base_dir here (the full `base_dir = get_base_dir()` happens lower in the script).
-_tok_manifest_path = os.path.join(get_base_dir(), "tokenizer", "tokenizer_manifest.json")
-if os.path.exists(_tok_manifest_path):
-    try:
-        import json as _json
-        _manifest = _json.loads(open(_tok_manifest_path).read())
-        _manifest_bos = _manifest.get("tokenizer", {}).get("special_tokens", {}).get("[BOS]")
-        if _manifest_bos is not None and _manifest_bos != _bos_id:
-            print0(
-                f"WARNING: tokenizer manifest expects BOS id={_manifest_bos} but runtime BOS id={_bos_id}. "
-                "Proceeding, but verify the tokenizer directory isn't stale."
-            )
-        _manifest_vocab = _manifest.get("tokenizer", {}).get("vocab_size")
-        if _manifest_vocab is not None and _manifest_vocab != vocab_size:
-            print0(
-                f"WARNING: tokenizer manifest vocab_size ({_manifest_vocab}) != runtime ({vocab_size})."
-            )
-        _manifest_sha = _manifest.get("outputs", {}).get("sha256_token_bytes_pt", "<none>")
-        print0(f"Tokenizer manifest: token_bytes sha256={_manifest_sha[:16]}...  format={_manifest.get('tokenizer', {}).get('format', 'unknown')}")
-    except Exception as _mf_err:
-        print0(f"Tokenizer manifest present but unreadable ({_mf_err}); continuing without manifest check")
-else:
-    print0(f"(No tokenizer_manifest.json at {_tok_manifest_path} — skipping manifest SHA print)")
+artifact_identity = validate_tokenizer_artifacts(base_dir, tokenizer, token_bytes)
+print0(
+    f"Tokenizer identity OK: vocab={vocab_size}, BOS={_bos_id}, "
+    f"tokenizer={artifact_identity['tokenizer_sha256'][:16]}..., "
+    f"token_bytes={artifact_identity['token_bytes_sha256'][:16]}..."
+)
+for _cache_label, _cache_dir in (
+    ("training cache", args.token_cache_dir),
+    ("validation cache", args.val_cache_dir),
+):
+    if _cache_dir:
+        validate_cache_tokenizer_identity(_cache_dir, artifact_identity)
+        print0(f"{_cache_label} tokenizer identity OK: {_cache_dir}")
 
 # Model kwargs are derived from the desired depth of the model
 num_layers = args.depth
@@ -296,13 +287,13 @@ print0(f"Memory knobs: activation_checkpoint={model.use_activation_checkpoint} "
        f"(chunk_size={model.loss_chunk_size})")
 
 # If we are resuming, overwrite the model parameters with those of the checkpoint
-base_dir = get_base_dir()
 output_dirname = args.model_tag if args.model_tag else f"d{args.depth}" # e.g. d12
 checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
 resuming = args.resume_from_step != -1
 if resuming:
     print0(f"Resuming optimization from step {args.resume_from_step}")
     model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, args.resume_from_step, device, load_optimizer=True, rank=ddp_rank)
+    validate_identity_binding("checkpoint", meta_data.get("artifact_identity"), artifact_identity)
     # Vocab-shape sanity: the checkpoint's wte + lm_head must match the tokenizer we're
     # about to feed tokens from. If vocabs drift (e.g. someone swaps tokenizer.json without
     # retraining), strict=True below would error unhelpfully — preempt with a clearer message.
@@ -399,7 +390,6 @@ def _sha256_file(p):
 if args.expect_json:
     with open(args.expect_json) as _f:
         _expected = json.load(_f)
-    _tok_dir = os.path.join(base_dir, "tokenizer")
     resolved_config = {
         "model": {
             "n_layer": num_layers, "n_embd": model_dim, "n_head": num_heads,
@@ -422,8 +412,8 @@ if args.expect_json:
         },
         "tokenizer": {
             "vocab_size": vocab_size, "bos_id": _bos_id,
-            "sha256_tokenizer_pkl": _sha256_file(os.path.join(_tok_dir, "tokenizer.pkl")),
-            "sha256_token_bytes_pt": _sha256_file(os.path.join(_tok_dir, "token_bytes.pt")),
+            "sha256_tokenizer_pkl": artifact_identity["tokenizer_sha256"],
+            "sha256_token_bytes_npy": artifact_identity["token_bytes_sha256"],
         },
         "data": {
             "ordering_order_sha256": _ordering_order_sha,
@@ -445,6 +435,7 @@ if args.expect_json:
 # fixes it exactly (step * grad_accum_steps yields were consumed).
 consumed_yields = grad_accum_steps * (args.resume_from_step if resuming else 0)
 canary_by_yield = {}
+canary_yields = set()
 if args.canary_file:
     if args.seq_len_late > 0:
         raise RuntimeError("--canary_file is incompatible with --seq_len_late "
@@ -456,9 +447,11 @@ if args.canary_file:
         grad_accum=grad_accum_steps,
         ordering_sha256=_ordering_order_sha,
     )
-    _pending = sum(1 for k in canary_by_yield if k > consumed_yields)
-    print0(f"[canary] loaded {len(canary_by_yield)} canaries from {args.canary_file}; "
-           f"{_pending} ahead of yield {consumed_yields}")
+    canary_yields = {after_yield for after_yield, _rank in canary_by_yield}
+    _pending = sum(1 for after_yield in canary_yields if after_yield > consumed_yields)
+    print0(f"[canary] loaded {len(canary_by_yield)} rank canaries across "
+           f"{len(canary_yields)} yields from {args.canary_file}; "
+           f"{_pending} yields ahead of {consumed_yields}")
 
 def _write_abort_record(kind, payload):
     """Small diagnostic record on abort (Sol P0-6): never a resumable checkpoint."""
@@ -685,6 +678,7 @@ while True:
                 "current_seq_len": current_seq_len,
                 "consumed_yields": consumed_yields,
                 "dataloader_state_dict": merged_loader_state,
+                "artifact_identity": artifact_identity,
                 "loop_state": { # all loop state (other than step) so that we can resume training
                     "min_val_bpb": min_val_bpb,
                     "smooth_train_loss": smooth_train_loss,
@@ -789,21 +783,26 @@ while True:
         consumed_yields += 1
         # Traversal canary (Sol P0-7): asserted per-yield, so mid-accumulation
         # canaries are exact — no optimizer-boundary flooring involved.
-        if canary_by_yield:
-            _canary = canary_by_yield.get(consumed_yields)
-            if _canary is not None:
+        if canary_by_yield and consumed_yields in canary_yields:
+            _canary = canary_by_yield.get((consumed_yields, ddp_rank))
+            if _canary is None:
+                _mismatch = (
+                    f"scheduled canary yield has no record for runtime rank {ddp_rank}"
+                )
+            else:
                 _mismatch = check_canary(_canary, consumed_loader_state, ddp_rank)
-                if _mismatch:
-                    _write_abort_record("canary", {
-                        "step": step, "after_yield": consumed_yields,
-                        "mismatch": _mismatch, "canary": _canary,
-                        "state": {k: v for k, v in (consumed_loader_state or {}).items()
-                                  if k in ("per_rank", "identity")},
-                    })
-                    raise RuntimeError(
-                        f"CANARY MISMATCH after yield {consumed_yields} (step {step}): "
-                        f"{_mismatch} — the corpus traversal has diverged from the "
-                        "Tier-1 trace; do NOT continue or resume past this point.")
+            if _mismatch:
+                _write_abort_record("canary", {
+                    "step": step, "after_yield": consumed_yields,
+                    "mismatch": _mismatch, "canary": _canary,
+                    "state": {k: v for k, v in (consumed_loader_state or {}).items()
+                              if k in ("per_rank", "identity")},
+                })
+                raise RuntimeError(
+                    f"CANARY MISMATCH after yield {consumed_yields} (step {step}): "
+                    f"{_mismatch} — the corpus traversal has diverged from the "
+                    "Tier-1 trace; do NOT continue or resume past this point.")
+            if _canary is not None:
                 print0(f"[canary] PASS after_yield={consumed_yields} "
                        f"(pos={_canary['position']}, off={_canary['offset']})")
         # Time the loader fetch. This under-reports true loader cost when the loader

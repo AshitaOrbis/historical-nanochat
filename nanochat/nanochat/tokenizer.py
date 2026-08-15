@@ -429,12 +429,16 @@ def get_tokenizer():
     )
 
 def get_token_bytes(device="cpu"):
+    import numpy as np
     import torch
     from nanochat.common import get_base_dir
     base_dir = get_base_dir()
     tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
-    assert os.path.exists(token_bytes_path), f"Token bytes not found at {token_bytes_path}? It gets written by tok_train.py"
-    with open(token_bytes_path, "rb") as f:
-        token_bytes = torch.load(f, map_location=device)
-    return token_bytes
+    token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.npy")
+    if not os.path.exists(token_bytes_path):
+        raise FileNotFoundError(
+            f"Token bytes not found at {token_bytes_path}. Regenerate the safe NumPy "
+            "artifact and tokenizer_manifest.json before training."
+        )
+    values = np.load(token_bytes_path, allow_pickle=False)
+    return torch.from_numpy(values).to(device=device)

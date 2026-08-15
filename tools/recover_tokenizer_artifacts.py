@@ -1,5 +1,5 @@
 """
-One-time recovery of the per-token byte-length tensor (`token_bytes.pt`) for the
+One-time recovery of the per-token byte-length array (`token_bytes.npy`) for the
 historical-nanochat tokenizer. The tokenizer pickle (`tokenizer.pkl`) is
 intentionally NOT produced — see "Why we don't write a tiktoken pickle" below.
 
@@ -7,7 +7,7 @@ Why we're here
 --------------
 The step-3000 base-training run used `tokenizer/tokenizer.json` (HuggingFace
 BPE + ByteLevel pre-tokenizer, vocab=32000, specials `[UNK] [PAD] [BOS] [EOS]`).
-The `tokenizer.pkl` and `token_bytes.pt` that nanochat's loader expects were
+The `tokenizer.pkl` and `token_bytes.npy` that nanochat's loader expects were
 lost in the Feb 2026 cleanup. We need to regenerate just enough to make the
 existing checkpoint resumable without changing a single token id.
 
@@ -33,7 +33,7 @@ What this script does
 ---------------------
 1. Loads `tokenizer/tokenizer.json` via HuggingFace `tokenizers`.
 2. Verifies structural invariants (vocab size, id contiguity, BPE + ByteLevel).
-3. Builds `token_bytes.pt`: `int32[vocab_size]` where each entry is the UTF-8
+3. Builds `token_bytes.npy`: `int32[vocab_size]` where each entry is the UTF-8
    byte-length of the corresponding token's decoded string; specials get 0.
    This matches `scripts/tok_train.py` exactly so the bpb metric is unchanged.
 4. Validates `decode(encode(x)) == x` on a test suite and optional corpus
@@ -61,6 +61,7 @@ import time
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import numpy as np
 import torch
 from tokenizers import Tokenizer as HFTokenizer
 
@@ -295,7 +296,7 @@ def main():
     if not tok_json.exists():
         raise SystemExit(f"tokenizer.json not found at {tok_json}")
 
-    tb_out = out_dir / "token_bytes.pt"
+    tb_out = out_dir / "token_bytes.npy"
     manifest_out = out_dir / "tokenizer_manifest.json"
 
     if tb_out.exists() and not args.force:
@@ -370,8 +371,7 @@ def main():
     print(f"[5/5] Writing {tb_out}")
     special_ids = set(specials_in_json.values())
     token_bytes = build_token_bytes(hf_tok, vocab_size, special_ids)
-    with tb_out.open("wb") as f:
-        torch.save(token_bytes, f)
+    np.save(tb_out, token_bytes.numpy(), allow_pickle=False)
 
     print(f"      Writing manifest {manifest_out}")
     manifest = {
@@ -383,8 +383,10 @@ def main():
             "sha256_tokenizer_json": _sha256(tok_json),
         },
         "outputs": {
-            "token_bytes_pt": str(tb_out),
-            "sha256_token_bytes_pt": _sha256(tb_out),
+            "tokenizer_json": "tokenizer/tokenizer.json",
+            "sha256_tokenizer_json": _sha256(tok_json),
+            "token_bytes_npy": "tokenizer/token_bytes.npy",
+            "sha256_token_bytes_npy": _sha256(tb_out),
             # No tokenizer.pkl — see 'pickle_skipped_reason' below.
         },
         "tokenizer": {
@@ -423,7 +425,7 @@ def main():
             "no merges regenerated.",
             "[BOS] (id=2) is used as the BOS token via HuggingFaceTokenizer.get_bos_token_id's "
             "fallback chain (<|bos|> -> <|endoftext|> -> [BOS]). Unchanged by this recovery.",
-            "token_bytes.pt is regenerated from scratch, mirroring scripts/tok_train.py "
+            "token_bytes.npy is regenerated from scratch, mirroring scripts/tok_train.py "
             "lines 78-87 exactly: specials get 0, ordinary tokens get UTF-8 byte length of "
             "decode([id]).",
         ],

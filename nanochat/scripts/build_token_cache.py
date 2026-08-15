@@ -31,7 +31,9 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from nanochat.tokenizer import get_tokenizer
+from nanochat.artifact_guard import validate_tokenizer_artifacts
+from nanochat.common import get_base_dir
+from nanochat.tokenizer import get_token_bytes, get_tokenizer
 
 
 def tokenize_shard(parquet_path: str, tokenizer, bos_token: int,
@@ -53,7 +55,7 @@ def tokenize_shard(parquet_path: str, tokenizer, bos_token: int,
 
 
 def pick_dtype(vocab_size: int):
-    return np.uint16 if vocab_size < 65536 else np.uint32
+    return np.dtype("<u2") if vocab_size < 65536 else np.dtype("<u4")
 
 
 def main():
@@ -76,13 +78,19 @@ def main():
     tokenizer = get_tokenizer()
     bos = tokenizer.get_bos_token_id()
     vocab = tokenizer.get_vocab_size()
+    artifact_identity = validate_tokenizer_artifacts(
+        get_base_dir(), tokenizer, get_token_bytes(device="cpu")
+    )
     dtype = pick_dtype(vocab)
     print(f"Tokenizer vocab: {vocab}, cache dtype: {dtype}")
 
     manifest = {
+        "format_version": 1,
+        "byte_order": "little",
         "input_dir": str(input_dir),
         "vocab_size": vocab,
-        "dtype": str(dtype.__name__),
+        "dtype": dtype.name,
+        "tokenizer_identity": artifact_identity,
         "shards": [],
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }

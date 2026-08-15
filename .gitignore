@@ -36,7 +36,13 @@ ENV/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# Data directories (large files, download separately)
+# Data directories (large files, download separately). The downloader and
+# packager Python packages under data/download and data/process are source.
+/data/*
+!/data/download/
+!/data/download/*.py
+!/data/process/
+!/data/process/*.py
 data/raw/
 data/processed/
 *.parquet
@@ -79,6 +85,5 @@ secrets/
 tmp/
 temp/
 *.tmp
-/data
 context/chatgpt-conversations/_ALL_TITLES.txt
 runs/launch_2026-07-06/.monitor-webhook-env

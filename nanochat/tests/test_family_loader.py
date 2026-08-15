@@ -3,8 +3,14 @@ from __future__ import annotations
 
 import os
 import sys
+import hashlib
+import importlib.util
+import json
 from collections import Counter
 from pathlib import Path
+
+import numpy as np
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "nanochat"))
@@ -15,9 +21,300 @@ os.environ.setdefault("LOCAL_RANK", "0")
 
 CACHE_TRAIN = Path("data/token_cache_v4_balanced_candidate/train")
 
+KNOWN_FAMILIES = (
+    "books_general",
+    "newspapers_periodicals",
+    "legal_government",
+    "science_technical",
+    "early_modern",
+)
+
+
+def write_family_cache(root: Path, shard_count: int = 5) -> Path:
+    train = root / "train"
+    train.mkdir(parents=True)
+    shards = []
+    per_shard = []
+    for index in range(shard_count):
+        family = KNOWN_FAMILIES[index % len(KNOWN_FAMILIES)]
+        filename = f"shard_{index:05d}.bin"
+        values = np.arange(64, dtype=np.dtype("<u2"))
+        values.tofile(train / filename)
+        shards.append({
+            "shard_index": index,
+            "filename": filename,
+            "source_file": f"/source/shard_{family}_source_{index:06d}.parquet",
+            "tokens": len(values),
+            "bytes": values.nbytes,
+        })
+        per_shard.append({"shard_index": index, "family": family})
+
+    manifest_path = train / "cache_manifest.json"
+    # format_version/byte_order are required by the 2026-08-13 artifact-contract
+    # guard in _load_manifest; this fixture must be a *valid* cache so that the
+    # assertions below exercise the provenance/resume rejections they target.
+    manifest_path.write_text(json.dumps({
+        "format_version": 1,
+        "byte_order": "little",
+        "vocab_size": 32768,
+        "dtype": "uint16",
+        "shards": shards,
+    }))
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    (root / "provenance.json").write_text(json.dumps({
+        "splits": {
+            "train": {
+                "manifest_sha256": manifest_sha,
+                "per_shard": per_shard,
+            }
+        }
+    }))
+    return train
+
+
+def test_unknown_cache_dtype_name_is_rejected():
+    from nanochat.dataloader_cached import _dtype_from_str
+
+    with pytest.raises(ValueError, match="dtype"):
+        _dtype_from_str("uint32le", "little")
+
+
+def test_duplicate_provenance_cannot_satisfy_coverage(tmp_path):
+    from nanochat.dataloader_cached import _load_family_shard_lists
+
+    train = write_family_cache(tmp_path, shard_count=20)
+    provenance_path = tmp_path / "provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    # Nineteen records over a 20-shard manifest passes the old 95% row-count
+    # gate even though only five unique shards are represented.
+    provenance["splits"]["train"]["per_shard"] = [
+        {
+            "shard_index": index % 5,
+            "family": KNOWN_FAMILIES[index % 5],
+        }
+        for index in range(19)
+    ]
+    provenance_path.write_text(json.dumps(provenance))
+
+    with pytest.raises(RuntimeError, match="duplicate"):
+        _load_family_shard_lists(str(train))
+
+
+def test_public_provenance_builder_writes_manifest_hash_binding(tmp_path):
+    train = write_family_cache(tmp_path)
+    (tmp_path / "provenance.json").unlink()
+    tool_path = REPO / "tools" / "build_cache_provenance.py"
+    assert tool_path.exists(), "the public hash-bound provenance builder is missing"
+    spec = importlib.util.spec_from_file_location("build_cache_provenance", tool_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    provenance = module.build_provenance(tmp_path)
+    actual_sha = hashlib.sha256((train / "cache_manifest.json").read_bytes()).hexdigest()
+    assert provenance["splits"]["train"]["manifest_sha256"] == actual_sha
+    assert len(provenance["splits"]["train"]["per_shard"]) == 5
+
+
+def test_resume_rejects_changed_same_length_family_schedule(tmp_path):
+    from nanochat.dataloader_cached import cached_family_balanced_data_loader_with_state
+
+    train = write_family_cache(tmp_path)
+    schedule_a = [(family, 1) for family in KNOWN_FAMILIES]
+    schedule_b = [schedule_a[1], schedule_a[0], *schedule_a[2:]]
+    resume = {
+        "loader_strategy": "parallel_family_cache",
+        "microbatch_index": 0,
+        "family_cursors": {family: 0 for family in KNOWN_FAMILIES},
+        "family_token_cursors": {family: 0 for family in KNOWN_FAMILIES},
+        "family_wrap_counts": {family: 0 for family in KNOWN_FAMILIES},
+        "family_schedule": [[family, count] for family, count in schedule_a],
+    }
+    loader = cached_family_balanced_data_loader_with_state(
+        B=1,
+        T=8,
+        split="train",
+        device="cpu",
+        cache_dir=str(train),
+        grad_accum_steps=5,
+        family_schedule=schedule_b,
+        resume_state_dict=resume,
+    )
+    with pytest.raises(RuntimeError, match="family_schedule"):
+        next(loader)
+
+
+def test_synthetic_family_resume_reproduces_next_batch(tmp_path):
+    from nanochat.dataloader_cached import cached_family_balanced_data_loader_with_state
+
+    train = write_family_cache(tmp_path)
+    schedule = [(family, 1) for family in KNOWN_FAMILIES]
+
+    def make_loader(resume=None):
+        return cached_family_balanced_data_loader_with_state(
+            B=1,
+            T=8,
+            split="train",
+            device="cpu",
+            cache_dir=str(train),
+            grad_accum_steps=5,
+            family_schedule=schedule,
+            resume_state_dict=resume,
+        )
+
+    original = make_loader()
+    _inputs, _targets, state = next(original)
+    expected_inputs, expected_targets, expected_state = next(original)
+    resumed_inputs, resumed_targets, resumed_state = next(make_loader(state))
+
+    assert np.array_equal(resumed_inputs.numpy(), expected_inputs.numpy())
+    assert np.array_equal(resumed_targets.numpy(), expected_targets.numpy())
+    assert (
+        resumed_state["current_microbatch_family"]
+        == expected_state["current_microbatch_family"]
+    )
+
+
+def _write_family_contract(root: Path, count: int = 20) -> Path:
+    train = root / "train"
+    train.mkdir(parents=True)
+    shards = []
+    per_shard = []
+    for index in range(count):
+        family = KNOWN_FAMILIES[index % len(KNOWN_FAMILIES)]
+        filename = f"shard_{index:05d}.bin"
+        values = np.arange(64, dtype=np.dtype("<u2"))
+        values.tofile(train / filename)
+        shards.append({
+            "shard_index": index,
+            "filename": filename,
+            "source_file": f"/source/shard_{family}_source_{index:06d}.parquet",
+            "tokens": len(values),
+            "bytes": values.nbytes,
+        })
+        per_shard.append({"shard_index": index, "family": family})
+    manifest_path = train / "cache_manifest.json"
+    manifest_path.write_text(json.dumps({
+        "format_version": 1,
+        "byte_order": "little",
+        "dtype": "uint16",
+        "shards": shards,
+    }))
+    manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    (root / "provenance.json").write_text(json.dumps({
+        "splits": {
+            "train": {
+                "manifest_sha256": manifest_sha,
+                "per_shard": per_shard,
+            }
+        }
+    }))
+    return train
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "extra", "duplicate", "unknown_family", "family_mismatch", "wrong_hash"],
+)
+def test_family_provenance_requires_exact_hash_bound_bijection(tmp_path, mutation):
+    from nanochat.dataloader_cached import _load_family_shard_lists
+
+    train = _write_family_contract(tmp_path)
+    provenance_path = tmp_path / "provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    split = provenance["splits"]["train"]
+    if mutation == "missing":
+        split["per_shard"].pop()
+    elif mutation == "extra":
+        split["per_shard"].append({"shard_index": 999, "family": "books_general"})
+    elif mutation == "duplicate":
+        split["per_shard"].append(dict(split["per_shard"][0]))
+    elif mutation == "unknown_family":
+        split["per_shard"][0]["family"] = "unknown"
+    elif mutation == "family_mismatch":
+        split["per_shard"][0]["family"] = "newspapers_periodicals"
+    elif mutation == "wrong_hash":
+        split["manifest_sha256"] = "0" * 64
+    provenance_path.write_text(json.dumps(provenance))
+
+    with pytest.raises(RuntimeError):
+        _load_family_shard_lists(str(train))
+
+
+def test_family_provenance_accepts_exact_hash_bound_bijection(tmp_path):
+    from nanochat.dataloader_cached import _load_family_shard_lists
+
+    train = _write_family_contract(tmp_path)
+    by_family = _load_family_shard_lists(str(train))
+    assert sum(len(shards) for shards in by_family.values()) == 20
+
+
+def test_provenance_builder_writes_manifest_hash_binding(tmp_path):
+    train = _write_family_contract(tmp_path)
+    (tmp_path / "provenance.json").unlink()
+    tool_path = REPO / "tools" / "build_cache_provenance.py"
+    assert tool_path.exists(), "bound provenance builder is missing"
+    spec = importlib.util.spec_from_file_location("build_cache_provenance", tool_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    provenance = module.build_provenance(tmp_path)
+    actual_sha = hashlib.sha256((train / "cache_manifest.json").read_bytes()).hexdigest()
+    assert provenance["splits"]["train"]["manifest_sha256"] == actual_sha
+    assert len(provenance["splits"]["train"]["per_shard"]) == 20
+
+
+def test_unknown_cache_dtype_is_rejected():
+    from nanochat.dataloader_cached import _dtype_from_str
+
+    with pytest.raises(ValueError, match="dtype"):
+        _dtype_from_str("uint8", "little")
+
+
+def test_cache_manifest_requires_version_and_byte_order(tmp_path):
+    from nanochat.dataloader_cached import _load_manifest
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "cache_manifest.json").write_text(json.dumps({
+        "dtype": "uint16",
+        "shards": [],
+    }))
+    with pytest.raises(ValueError, match="format_version|byte_order"):
+        _load_manifest(str(cache))
+
+
+def test_all_shard_lengths_are_checked_before_first_batch(tmp_path):
+    from nanochat.dataloader_cached import cached_distributed_data_loader_with_state
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    good = np.arange(64, dtype=np.dtype("<u2"))
+    bad = np.arange(63, dtype=np.dtype("<u2"))
+    good.tofile(cache / "shard_00000.bin")
+    bad.tofile(cache / "shard_00001.bin")
+    (cache / "cache_manifest.json").write_text(json.dumps({
+        "format_version": 1,
+        "byte_order": "little",
+        "dtype": "uint16",
+        "shards": [
+            {"shard_index": 0, "filename": "shard_00000.bin", "tokens": 64},
+            {"shard_index": 1, "filename": "shard_00001.bin", "tokens": 64},
+        ],
+    }))
+
+    loader = cached_distributed_data_loader_with_state(
+        B=1, T=8, split="all", device="cpu", cache_dir=str(cache)
+    )
+    with pytest.raises(RuntimeError, match="byte length"):
+        next(loader)
+
 
 def test_schedule_produces_expected_family_mix_per_step():
     """Run grad_accum_steps microbatches and verify family counts match schedule."""
+    if not (CACHE_TRAIN / "cache_manifest.json").is_file():
+        pytest.skip("requires the private token_cache_v4_balanced_candidate fixture")
     from nanochat.dataloader_cached import (
         cached_family_balanced_data_loader_with_state,
         DEFAULT_FAMILY_SCHEDULE,
@@ -44,6 +341,8 @@ def test_schedule_produces_expected_family_mix_per_step():
 def test_cursors_advance():
     """After enough microbatches, at least one family should have crossed a
     shard boundary OR consumed its entire initial 1M-token refill."""
+    if not (CACHE_TRAIN / "cache_manifest.json").is_file():
+        pytest.skip("requires the private token_cache_v4_balanced_candidate fixture")
     from nanochat.dataloader_cached import cached_family_balanced_data_loader_with_state
 
     # Use DBS=8, T=1024 (matches real training) so we consume tokens fast enough.
@@ -67,6 +366,8 @@ def test_cursors_advance():
 
 
 def test_resume_produces_same_next_microbatch():
+    if not (CACHE_TRAIN / "cache_manifest.json").is_file():
+        pytest.skip("requires the private token_cache_v4_balanced_candidate fixture")
     from nanochat.dataloader_cached import cached_family_balanced_data_loader_with_state
 
     # Run 100 microbatches, capture resume state
@@ -105,7 +406,10 @@ def test_refuse_if_provenance_missing(tmp_path=None):
         # Write a minimal cache_manifest so _load_manifest doesn't fail before
         # provenance check, but NO provenance.json.
         (tdp / "cache_manifest.json").write_text(json.dumps({
-            "dtype": "uint16", "shards": [],
+            "format_version": 1,
+            "byte_order": "little",
+            "dtype": "uint16",
+            "shards": [],
         }))
         try:
             loader = cached_family_balanced_data_loader_with_state(

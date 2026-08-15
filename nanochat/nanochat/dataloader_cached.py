@@ -71,12 +71,74 @@ def _load_manifest(cache_dir: str) -> dict:
             "Run `python -m scripts.build_token_cache --input-dir ... --output-dir ...` first."
         )
     with open(manifest_path) as f:
-        return json.load(f)
+        manifest = json.load(f)
+    if not isinstance(manifest, dict):
+        raise ValueError(f"{manifest_path}: cache manifest must be a JSON object")
+    if manifest.get("format_version") != 1:
+        raise ValueError(
+            f"{manifest_path}: format_version must be 1; rebuild or migrate this cache"
+        )
+    byte_order = manifest.get("byte_order")
+    dtype = _dtype_from_str(manifest.get("dtype"), byte_order)
+    shards = manifest.get("shards")
+    if not isinstance(shards, list):
+        raise ValueError(f"{manifest_path}: shards must be a list")
+
+    itemsize = dtype.itemsize
+    seen_indices = set()
+    for position, entry in enumerate(shards):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{manifest_path}: shard entry {position} must be an object")
+        shard_index = entry.get("shard_index")
+        tokens = entry.get("tokens")
+        if not isinstance(shard_index, int) or shard_index in seen_indices:
+            raise ValueError(
+                f"{manifest_path}: shard_index must be a unique integer (entry {position})"
+            )
+        if not isinstance(tokens, int) or tokens < 0:
+            raise ValueError(
+                f"{manifest_path}: shard {shard_index} requires a non-negative integer tokens field"
+            )
+        seen_indices.add(shard_index)
+        filename = entry.get("filename") or f"shard_{shard_index:05d}.bin"
+        shard_path = os.path.join(cache_dir, filename)
+        try:
+            actual_bytes = os.path.getsize(shard_path)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"{manifest_path}: shard {shard_index} file is missing: {shard_path}"
+            ) from exc
+        expected_bytes = tokens * itemsize
+        if actual_bytes != expected_bytes:
+            raise RuntimeError(
+                f"{shard_path}: byte length {actual_bytes} != manifest tokens {tokens} "
+                f"* dtype itemsize {itemsize} ({expected_bytes})"
+            )
+        if "bytes" in entry and entry["bytes"] != expected_bytes:
+            raise RuntimeError(
+                f"{manifest_path}: shard {shard_index} declares bytes={entry['bytes']} "
+                f"but tokens*dtype.itemsize={expected_bytes}"
+            )
+    return manifest
 
 
-def _dtype_from_str(name: str):
-    # whitelist: only dtypes our builder uses.
-    return {"uint16": np.uint16, "uint32": np.uint32}.get(name, np.uint16)
+def _dtype_from_str(name: str, byte_order: str):
+    """Return an explicitly little-endian cache dtype or reject the schema.
+
+    Union of both review enactments: 0814 required rejecting unknown dtype
+    names; 0813 additionally required an explicit little-endian byte order.
+    Both rejection paths are kept.
+    """
+    if byte_order != "little":
+        raise ValueError(
+            f"cache byte_order must be 'little', got {byte_order!r}"
+        )
+    dtypes = {"uint16": np.dtype("<u2"), "uint32": np.dtype("<u4")}
+    if name not in dtypes:
+        raise ValueError(
+            f"cache dtype must be one of {sorted(dtypes)}, got {name!r}"
+        )
+    return dtypes[name]
 
 
 def cached_distributed_data_loader_with_state(
@@ -109,7 +171,7 @@ def cached_distributed_data_loader_with_state(
     assert cache_dir is not None, "cache_dir is required"
 
     manifest = _load_manifest(cache_dir)
-    dtype = _dtype_from_str(manifest["dtype"])
+    dtype = _dtype_from_str(manifest["dtype"], manifest["byte_order"])
     shard_entries = sorted(manifest["shards"], key=lambda e: e["shard_index"])
 
     # Split semantics:
@@ -315,14 +377,20 @@ DEFAULT_FAMILY_SCHEDULE = [
 ]
 
 
+KNOWN_FAMILIES = (
+    "books_general", "newspapers_periodicals", "legal_government",
+    "science_technical", "early_modern",
+)
+
+
 def _load_family_shard_lists(cache_dir: str) -> dict[str, list[dict]]:
-    """Partition manifest shards by family. Requires provenance.json."""
+    """Partition manifest shards by family after exact, hash-bound provenance validation."""
     prov_path = os.path.join(os.path.dirname(cache_dir.rstrip("/")), "provenance.json")
     # provenance.json lives one level above (parent has train/ and val/ subdirs)
     if not os.path.exists(prov_path):
         raise FileNotFoundError(
             f"parallel_family_cache requires provenance.json at {prov_path}; "
-            "build it via `python -m data.phase0.process.build_token_cache_v4`."
+            "build it via `python tools/build_cache_provenance.py --cache-root <root>`."
         )
     with open(prov_path) as f:
         prov = json.load(f)
@@ -344,15 +412,20 @@ def _load_family_shard_lists(cache_dir: str) -> dict[str, list[dict]]:
             f"provenance.json has no per_shard entries for split={split_key}."
         )
     manifest = _load_manifest(cache_dir)
+    manifest_path = os.path.join(cache_dir, "cache_manifest.json")
+    with open(manifest_path, "rb") as manifest_file:
+        manifest_sha256 = hashlib.sha256(manifest_file.read()).hexdigest()
+    bound_sha256 = split_info.get("manifest_sha256")
+    if bound_sha256 != manifest_sha256:
+        raise RuntimeError(
+            f"parallel_family_cache: provenance for split={split_key} is not bound "
+            f"to this manifest (expected manifest_sha256={manifest_sha256}, "
+            f"got {bound_sha256!r}); regenerate provenance"
+        )
+
     manifest_by_idx = {s["shard_index"]: s for s in manifest["shards"]}
     by_family: dict[str, list[dict]] = {}
-    matched = 0
-    skipped = 0
-    family_mismatches = 0
-    KNOWN_FAMILIES = (
-        "books_general", "newspapers_periodicals", "legal_government",
-        "science_technical", "early_modern",
-    )
+    seen_indices: set[int] = set()
 
     def _family_from_source_file(source_file: str) -> str | None:
         name = source_file.split("/")[-1]
@@ -364,36 +437,47 @@ def _load_family_shard_lists(cache_dir: str) -> dict[str, list[dict]]:
         return None
 
     for rec in per_shard:
-        sidx = rec["shard_index"]
-        fam_provenance = rec["family"]
+        if not isinstance(rec, dict):
+            raise RuntimeError("parallel_family_cache: every provenance record must be an object")
+        sidx = rec.get("shard_index")
+        fam_provenance = rec.get("family")
+        if not isinstance(sidx, int):
+            raise RuntimeError("parallel_family_cache: provenance shard_index must be an integer")
+        if sidx in seen_indices:
+            raise RuntimeError(
+                f"parallel_family_cache: duplicate provenance record for shard_index={sidx}"
+            )
+        seen_indices.add(sidx)
         mentry = manifest_by_idx.get(sidx)
         if mentry is None:
-            skipped += 1
-            continue
-        # Sanity: verify provenance family matches the source_file's family.
-        fam_from_source = _family_from_source_file(mentry.get("source_file", ""))
-        if fam_from_source and fam_from_source != fam_provenance:
-            family_mismatches += 1
-        by_family.setdefault(fam_provenance, []).append(mentry)
-        matched += 1
-
-    coverage = matched / max(1, len(manifest["shards"]))
-    if coverage < 0.95:
-        raise RuntimeError(
-            f"parallel_family_cache: provenance.json covers only "
-            f"{coverage*100:.1f}% of manifest shards ({matched}/{len(manifest['shards'])}). "
-            "Regenerate provenance via "
-            "`python -m data.phase0.process.build_token_cache_v4 --skip-train --skip-val`."
-        )
-    if family_mismatches > 0:
-        mismatch_pct = family_mismatches / max(1, matched) * 100
-        if mismatch_pct > 5.0:
             raise RuntimeError(
-                f"parallel_family_cache: {family_mismatches} of {matched} shards have a "
-                f"provenance family that does not match the source_file family "
-                f"({mismatch_pct:.1f}%). Provenance is stale — regenerate via "
-                "`python -m data.phase0.process.build_token_cache_v4 --skip-train --skip-val`."
+                f"parallel_family_cache: provenance contains extra shard_index={sidx} "
+                "that is absent from the manifest"
             )
+        if fam_provenance not in KNOWN_FAMILIES:
+            raise RuntimeError(
+                f"parallel_family_cache: shard_index={sidx} has unknown family {fam_provenance!r}"
+            )
+        fam_from_source = _family_from_source_file(mentry.get("source_file", ""))
+        if fam_from_source is None:
+            raise RuntimeError(
+                f"parallel_family_cache: cannot derive a known family from source_file "
+                f"for shard_index={sidx}: {mentry.get('source_file')!r}"
+            )
+        if fam_from_source != fam_provenance:
+            raise RuntimeError(
+                f"parallel_family_cache: shard_index={sidx} provenance family "
+                f"{fam_provenance!r} disagrees with source_file family {fam_from_source!r}"
+            )
+        by_family.setdefault(fam_provenance, []).append(mentry)
+
+    manifest_indices = set(manifest_by_idx)
+    missing_indices = manifest_indices - seen_indices
+    if missing_indices:
+        raise RuntimeError(
+            f"parallel_family_cache: provenance is missing {len(missing_indices)} manifest "
+            f"shards, including {sorted(missing_indices)[:5]}; regenerate provenance"
+        )
     # Stabilize ordering by shard_index for reproducibility
     for fam in by_family:
         by_family[fam].sort(key=lambda e: e["shard_index"])
@@ -439,7 +523,10 @@ def cached_family_balanced_data_loader_with_state(
         )
 
     manifest = _load_manifest(cache_dir)
-    dtype = _dtype_from_str(manifest["dtype"])
+    dtype = _dtype_from_str(manifest["dtype"], manifest["byte_order"])
+    manifest_path = os.path.join(cache_dir, "cache_manifest.json")
+    with open(manifest_path, "rb") as manifest_file:
+        manifest_sha256 = hashlib.sha256(manifest_file.read()).hexdigest()
     family_shards = _load_family_shard_lists(cache_dir)
     missing = [fam for fam, _ in family_schedule if not family_shards.get(fam)]
     if missing:
@@ -455,11 +542,51 @@ def cached_family_balanced_data_loader_with_state(
 
     # Resume or init per-family cursors
     resume = resume_state_dict or {}
+    expected_schedule = [[fam, count] for fam, count in family_schedule]
+    expected_families = {fam for fam, _count in family_schedule}
+    if resume:
+        if resume.get("loader_strategy") != "parallel_family_cache":
+            raise RuntimeError(
+                "resume loader_strategy does not match parallel_family_cache"
+            )
+        if resume.get("family_schedule") != expected_schedule:
+            raise RuntimeError(
+                f"resume family_schedule {resume.get('family_schedule')!r} does not "
+                f"match runtime family_schedule {expected_schedule!r}"
+            )
+        expected_contract = {
+            "grad_accum_steps": grad_accum_steps,
+            "batch_size": B,
+            "sequence_length": T,
+            "cache_manifest_sha256": manifest_sha256,
+        }
+        for key, expected in expected_contract.items():
+            if resume.get(key) != expected:
+                raise RuntimeError(
+                    f"resume {key}={resume.get(key)!r} does not match runtime {expected!r}"
+                )
+        for cursor_key in (
+            "family_cursors", "family_token_cursors", "family_wrap_counts"
+        ):
+            cursor_map = resume.get(cursor_key)
+            if not isinstance(cursor_map, dict) or set(cursor_map) != expected_families:
+                raise RuntimeError(
+                    f"resume {cursor_key} family set does not match runtime families"
+                )
+            if any(not isinstance(value, int) or value < 0 for value in cursor_map.values()):
+                raise RuntimeError(
+                    f"resume {cursor_key} values must be non-negative integers"
+                )
+        saved_microbatch = resume.get("microbatch_index")
+        if not isinstance(saved_microbatch, int) or not 0 <= saved_microbatch < grad_accum_steps:
+            raise RuntimeError(
+                "resume microbatch_index must be an integer within grad_accum_steps"
+            )
     family_cursors: dict[str, int] = {fam: 0 for fam, _ in family_schedule}
     family_token_cursors: dict[str, int] = {fam: 0 for fam, _ in family_schedule}
     family_wrap_counts: dict[str, int] = {fam: 0 for fam, _ in family_schedule}
     microbatch_index = 0
-    if resume.get("loader_strategy") == "parallel_family_cache":
+    if resume:
         family_cursors.update(resume.get("family_cursors", {}))
         family_token_cursors.update(resume.get("family_token_cursors", {}))
         family_wrap_counts.update(resume.get("family_wrap_counts", {}))
@@ -528,7 +655,11 @@ def cached_family_balanced_data_loader_with_state(
             "family_cursors": dict(family_cursors),
             "family_token_cursors": dict(family_token_cursors),
             "family_wrap_counts": dict(family_wrap_counts),
-            "family_schedule": [[f, n] for f, n in family_schedule],
+            "family_schedule": expected_schedule,
+            "grad_accum_steps": grad_accum_steps,
+            "batch_size": B,
+            "sequence_length": T,
+            "cache_manifest_sha256": manifest_sha256,
         }
         yield inputs, targets, state
         microbatch_index = next_mb

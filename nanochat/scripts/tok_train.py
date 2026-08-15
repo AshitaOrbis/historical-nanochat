@@ -5,8 +5,11 @@ In the style of GPT-4 tokenizer.
 import os
 import time
 import argparse
+import hashlib
+import json
+import numpy as np
 import torch
-from nanochat.tokenizer import RustBPETokenizer
+from nanochat.tokenizer import RustBPETokenizer, SPECIAL_TOKENS
 from nanochat.common import get_base_dir
 from nanochat.dataset import parquets_iter_batched
 
@@ -85,10 +88,38 @@ for token_id in range(vocab_size):
         id_bytes = len(token_str.encode("utf-8")) # number of bytes that make up this token
         token_bytes.append(id_bytes)
 token_bytes = torch.tensor(token_bytes, dtype=torch.int32, device='cpu')
-token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.pt")
-with open(token_bytes_path, "wb") as f:
-    torch.save(token_bytes, f)
+token_bytes_path = os.path.join(tokenizer_dir, "token_bytes.npy")
+np.save(token_bytes_path, token_bytes.numpy(), allow_pickle=False)
 print(f"Saved token_bytes to {token_bytes_path}")
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as artifact_file:
+        for chunk in iter(lambda: artifact_file.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+tokenizer_path = os.path.join(tokenizer_dir, "tokenizer.pkl")
+manifest_path = os.path.join(tokenizer_dir, "tokenizer_manifest.json")
+special_ids = {name: tokenizer.encode_special(name) for name in SPECIAL_TOKENS}
+manifest = {
+    "script_version": "nanochat-tok-train-1",
+    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    "tokenizer": {
+        "format": "nanochat_rustbpe_tiktoken",
+        "vocab_size": vocab_size,
+        "special_tokens": special_ids,
+    },
+    "outputs": {
+        "tokenizer_pkl": "tokenizer/tokenizer.pkl",
+        "sha256_tokenizer_pkl": sha256_file(tokenizer_path),
+        "token_bytes_npy": "tokenizer/token_bytes.npy",
+        "sha256_token_bytes_npy": sha256_file(token_bytes_path),
+    },
+}
+with open(manifest_path, "w", encoding="utf-8") as manifest_file:
+    json.dump(manifest, manifest_file, indent=2)
+print(f"Saved tokenizer manifest to {manifest_path}")
 
 # Log to report
 from nanochat.report import get_report

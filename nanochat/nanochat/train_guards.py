@@ -24,8 +24,8 @@ def parse_steps_list(spec: str | None) -> set[int]:
 
 
 def load_canaries(path: str, *, needed: int, world_size: int, grad_accum: int,
-                  ordering_sha256: str | None) -> dict[int, dict]:
-    """Load and validate a canary file; return {after_yield: canary}.
+                  ordering_sha256: str | None) -> dict[tuple[int, int], dict]:
+    """Load and validate a canary file; return {(after_yield, rank): canary}.
 
     Refuses on any config mismatch — a canary set generated for a different
     DBS/world/ordering would either never fire or fire falsely (P0-7). This is
@@ -53,7 +53,48 @@ def load_canaries(path: str, *, needed: int, world_size: int, grad_accum: int,
     canaries = doc.get("canaries") or []
     if not canaries:
         raise RuntimeError(f"canary file {path}: no canaries listed")
-    return {int(c["after_yield"]): c for c in canaries}
+    by_yield_rank: dict[tuple[int, int], dict] = {}
+    ranks_by_yield: dict[int, set[int]] = {}
+    for index, canary in enumerate(canaries):
+        if not isinstance(canary, dict):
+            raise RuntimeError(f"canary file {path}: canary {index} must be an object")
+        try:
+            after_yield = int(canary["after_yield"])
+            rank = int(canary["rank"])
+            position = int(canary["position"])
+            offset = int(canary["offset"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"canary file {path}: canary {index} has invalid required coordinates"
+            ) from exc
+        if after_yield <= 0 or position < 0 or offset < 0:
+            raise RuntimeError(
+                f"canary file {path}: canary {index} coordinates must be non-negative "
+                "and after_yield must be positive"
+            )
+        if not 0 <= rank < world_size:
+            raise RuntimeError(
+                f"canary file {path}: canary {index} rank={rank} is outside "
+                f"runtime ranks 0..{world_size - 1}"
+            )
+        key = (after_yield, rank)
+        if key in by_yield_rank:
+            raise RuntimeError(
+                f"canary file {path}: duplicate canary for "
+                f"after_yield={after_yield}, rank={rank}"
+            )
+        by_yield_rank[key] = canary
+        ranks_by_yield.setdefault(after_yield, set()).add(rank)
+
+    expected_ranks = set(range(world_size))
+    for after_yield, ranks in ranks_by_yield.items():
+        missing = expected_ranks - ranks
+        if missing:
+            raise RuntimeError(
+                f"canary file {path}: after_yield={after_yield} is missing "
+                f"rank records {sorted(missing)}"
+            )
+    return by_yield_rank
 
 
 def check_canary(canary: dict, state: dict, rank: int) -> str | None:
@@ -62,8 +103,9 @@ def check_canary(canary: dict, state: dict, rank: int) -> str | None:
     Canary coords: position = position in the BAKED ORDERING (not manifest
     shard_index), offset = token offset of the consumed cursor after the yield.
     """
-    if int(canary.get("rank", 0)) != rank:
-        return None  # not this rank's canary
+    canary_rank = int(canary.get("rank", -1))
+    if canary_rank != rank:
+        return f"canary rank {canary_rank} != runtime rank {rank}"
     cur = (state or {}).get("per_rank", {}).get(str(rank))
     if cur is None:
         return f"no per_rank[{rank}] cursor in loader state"

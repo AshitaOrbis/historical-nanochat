@@ -238,7 +238,8 @@ def test_cached_loader_fails_loud_when_world_size_exceeds_shards(tmp_path, monke
             '{"shard_index": ' + str(i) + ', "docs": 8, "tokens": 64, "bytes": 128}'
         )
     (cache_dir / "cache_manifest.json").write_text(
-        '{"vocab_size": 50304, "dtype": "uint16", "shards": ['
+        '{"format_version": 1, "byte_order": "little", '
+        '"vocab_size": 50304, "dtype": "uint16", "shards": ['
         '{"shard_index": 0, "filename": "shard_00000.bin", "docs": 8, "tokens": 64},'
         '{"shard_index": 1, "filename": "shard_00001.bin", "docs": 8, "tokens": 64}]}'
     )
@@ -312,11 +313,12 @@ def test_seq_len_curriculum_switches_loader(tmp_path, monkeypatch):
     """Run a short training job that crosses the seq_len_late switch point
     and confirm (a) the switch log fires, (b) loss still moves, (c) final step
     completes without a shape mismatch."""
+    import hashlib
+    import json
     import pickle
     import subprocess
     import sys as _sys
     import tiktoken
-    import torch as _torch
 
     base_dir = tmp_path / "base"
     pq_dir = tmp_path / "parquet"
@@ -324,23 +326,42 @@ def test_seq_len_curriculum_switches_loader(tmp_path, monkeypatch):
     tok_dir.mkdir(parents=True)
     pq_dir.mkdir(parents=True)
 
-    # Build a tiktoken Encoding with the nanochat special tokens.
-    gpt2 = tiktoken.get_encoding("gpt2")
+    # Build a byte-level tiktoken Encoding locally. This keeps the integration
+    # test hermetic instead of downloading GPT-2 merge ranks on first use.
     specials = ["<|bos|>", "<|user_start|>", "<|user_end|>", "<|assistant_start|>",
                 "<|assistant_end|>", "<|python_start|>", "<|python_end|>",
                 "<|output_start|>", "<|output_end|>"]
-    vocab = gpt2.n_vocab + len(specials)
+    base_vocab = 256
+    special_ids = {name: base_vocab + i for i, name in enumerate(specials)}
     enc = tiktoken.Encoding(
-        name="dryrun", pat_str=gpt2._pat_str,
-        mergeable_ranks=gpt2._mergeable_ranks,
-        special_tokens={n: gpt2.n_vocab + i for i, n in enumerate(specials)},
+        name="dryrun",
+        pat_str=r"(?s:.)",
+        mergeable_ranks={bytes([i]): i for i in range(base_vocab)},
+        special_tokens=special_ids,
     )
+    vocab = enc.n_vocab
     with open(tok_dir / "tokenizer.pkl", "wb") as f:
         pickle.dump(enc, f)
-    byts = _torch.ones(vocab, dtype=_torch.int64)
-    for i in range(len(specials)):
-        byts[gpt2.n_vocab + i] = 0
-    _torch.save(byts, tok_dir / "token_bytes.pt")
+    byts = np.ones(vocab, dtype=np.int32)
+    for token_id in special_ids.values():
+        byts[token_id] = 0
+    np.save(tok_dir / "token_bytes.npy", byts, allow_pickle=False)
+
+    def sha256(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    (tok_dir / "tokenizer_manifest.json").write_text(json.dumps({
+        "tokenizer": {
+            "vocab_size": vocab,
+            "special_tokens": special_ids,
+        },
+        "outputs": {
+            "tokenizer_pkl": "tokenizer/tokenizer.pkl",
+            "sha256_tokenizer_pkl": sha256(tok_dir / "tokenizer.pkl"),
+            "token_bytes_npy": "tokenizer/token_bytes.npy",
+            "sha256_token_bytes_npy": sha256(tok_dir / "token_bytes.npy"),
+        },
+    }))
 
     # Two small parquet shards.
     for i, nrows in enumerate([64, 32]):
@@ -350,14 +371,27 @@ def test_seq_len_curriculum_switches_loader(tmp_path, monkeypatch):
                        use_dictionary=False, write_statistics=False)
 
     env = os.environ.copy()
+    for distributed_key in ("RANK", "LOCAL_RANK", "WORLD_SIZE"):
+        env.pop(distributed_key, None)
     env.update({
         "NANOCHAT_BASE_DIR": str(base_dir),
         "NANOCHAT_PARQUET_DIR": str(pq_dir),
         "TORCH_COMPILE_DISABLE": "1",
         "WANDB_MODE": "offline",
+        "GLOO_SOCKET_IFNAME": "lo",
     })
+    # Muon uses collective APIs even at world_size=1. Production CUDA launchers
+    # initialize that process group via torchrun; initialize a local Gloo group
+    # here so this CPU-only smoke test exercises the same collective contract.
+    rendezvous = tmp_path / "gloo-rendezvous"
+    runner = (
+        "import runpy; import torch.distributed as dist; "
+        f"dist.init_process_group('gloo', init_method='file://{rendezvous}', "
+        "rank=0, world_size=1); "
+        "runpy.run_module('scripts.base_train', run_name='__main__')"
+    )
     cmd = [
-        _sys.executable, "-m", "scripts.base_train",
+        _sys.executable, "-c", runner,
         "--device_type=cpu", "--depth=4", "--aspect_ratio=16", "--head_dim=16",
         "--max_seq_len=32", "--seq_len_late=64", "--seq_len_late_frac=0.5",
         "--device_batch_size=1", "--total_batch_size=64",

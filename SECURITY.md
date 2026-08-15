@@ -21,7 +21,8 @@ The pipeline assumes **all of the following are trusted**:
 
 1. **The model-generated code** that the HumanEval task executes (`execute_code`).
 2. **Every checkpoint** (`*.pt`) you load — your own or anyone else's.
-3. **Every tokenizer artifact** (`tokenizer.pkl`, `token_bytes.pt`) on disk.
+3. **Every executable tokenizer artifact** (`tokenizer.pkl`) on disk. The
+   tracked `token_bytes.npy` is non-pickle data, but its integrity still matters.
 4. **The local filesystem and `NANOCHAT_BASE_DIR`** you point the tools at.
 5. **Any HuggingFace model/tokenizer the probe harness loads** — `probes/harness.py`
    uses `trust_remote_code=True`, which executes remote repo code at load time.
@@ -165,21 +166,23 @@ third-party checkpoint:
 
 ---
 
-## 4. Tokenizer artifacts are unsafe deserialization (`pickle.load` / `torch.load`)
+## 4. The pickle tokenizer is unsafe deserialization (`pickle.load`)
 
 **Severity: P1. Disposition: MITIGATED (JSON fallback exists) + DOCUMENTED.**
 
-`nanochat/nanochat/tokenizer.py` loads `tokenizer.pkl` with `pickle.load` and
-`token_bytes.pt` with `torch.load`. `get_tokenizer()` **prefers the pickle**
-(`tokenizer.pkl`) for speed and falls back to `tokenizer.json` only if the pickle
-is absent. `pickle.load` on attacker-controlled data is arbitrary code execution,
-identical in shape to the checkpoint issue above. The artifact directory is
-redirectable via `NANOCHAT_BASE_DIR`, widening the attack surface to "anyone who
-can write that directory."
+`nanochat/nanochat/tokenizer.py` loads `tokenizer.pkl` with `pickle.load`.
+`get_tokenizer()` **prefers the pickle** (`tokenizer.pkl`) for speed and falls
+back to `tokenizer.json` only if the pickle is absent. `pickle.load` on
+attacker-controlled data is arbitrary code execution, identical in shape to the
+checkpoint issue above. The artifact directory is redirectable via
+`NANOCHAT_BASE_DIR`, widening the attack surface to "anyone who can write that
+directory." Token-byte lengths are separately stored in `token_bytes.npy` and
+loaded with `numpy.load(..., allow_pickle=False)`; that artifact is hash-, dtype-,
+shape-, vocabulary-, and BOS-checked before training starts.
 
 **Important — what this repo actually ships:** the active `tokenizer/` directory
-in this repository currently contains **only `tokenizer.pkl`** (plus
-`tokenizer_manifest.json`), **not** a `tokenizer.json`. Because
+contains `tokenizer.pkl`, `token_bytes.npy`, and `tokenizer_manifest.json`, but
+**not** a `tokenizer.json`. Because
 `get_tokenizer()` (`nanochat/nanochat/tokenizer.py`) checks for `tokenizer.pkl`
 **first**, the default load path for this repo IS the pickle path. The
 `tokenizer.pkl` shipped here is the author's own artifact and is trusted; but if

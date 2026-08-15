@@ -1,6 +1,6 @@
 """
 Post-training validator for the native nanochat tokenizer (tokenizer.pkl +
-token_bytes.pt produced by scripts.tok_train).
+token_bytes.npy produced by scripts.tok_train).
 
 What this checks:
   1. tokenizer.pkl loads as a tiktoken Encoding wrapped by RustBPETokenizer
@@ -12,11 +12,11 @@ What this checks:
   6. round-trip on 300+ corpus samples
   7. optional: large-shard or full-corpus UNK scan (there is no [UNK] token in
      rustbpe tokenizers by design; we scan for byte-level dropping instead)
-  8. token_bytes.pt is well-formed: same length as vocab, specials have
+  8. token_bytes.npy is well-formed: same length as vocab, specials have
      byte-count 0, ordinary tokens have positive byte counts
 
 Writes tokenizer/tokenizer_manifest.json with:
-  - SHA-256 of tokenizer.pkl, token_bytes.pt
+  - SHA-256 of tokenizer.pkl, token_bytes.npy
   - vocab_size, special_tokens {name: id}
   - validation summary (pass counts, any warnings)
   - chars_trained_on (from /tmp/tok_train.log if present)
@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import numpy as np
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -155,11 +156,11 @@ def main():
 
     tok_dir = Path(args.tokenizer_dir)
     pkl_path = tok_dir / "tokenizer.pkl"
-    tb_path = tok_dir / "token_bytes.pt"
+    tb_path = tok_dir / "token_bytes.npy"
     manifest_path = tok_dir / "tokenizer_manifest.json"
 
     if not pkl_path.exists() or not tb_path.exists():
-        raise SystemExit(f"Expected tokenizer.pkl + token_bytes.pt in {tok_dir}")
+        raise SystemExit(f"Expected tokenizer.pkl + token_bytes.npy in {tok_dir}")
 
     print(f"[1/6] Loading {pkl_path}")
     tokenizer = RustBPETokenizer.from_directory(str(tok_dir))
@@ -259,8 +260,8 @@ def main():
         print(f"      all {total_docs:,} corpus docs round-trip without byte drops")
 
     # token_bytes sanity
-    print(f"[6/6] Checking token_bytes.pt structure")
-    tb = torch.load(tb_path, map_location="cpu", weights_only=True)
+    print(f"[6/6] Checking token_bytes.npy structure")
+    tb = torch.from_numpy(np.load(tb_path, allow_pickle=False))
     if tb.shape[0] != vocab_size:
         raise SystemExit(f"token_bytes length {tb.shape[0]} != vocab {vocab_size}. Fail closed.")
     if tb.dtype != torch.int32:
@@ -305,10 +306,10 @@ def main():
             "corpus_dir": args.corpus_dir,
         },
         "outputs": {
-            "tokenizer_pkl": str(pkl_path),
+            "tokenizer_pkl": "tokenizer/tokenizer.pkl",
             "sha256_tokenizer_pkl": _sha256(pkl_path),
-            "token_bytes_pt": str(tb_path),
-            "sha256_token_bytes_pt": _sha256(tb_path),
+            "token_bytes_npy": "tokenizer/token_bytes.npy",
+            "sha256_token_bytes_npy": _sha256(tb_path),
         },
         "validation": {
             "byte_coverage_failures": 0,
@@ -336,7 +337,7 @@ def main():
     print(f"  special_tokens:      {len(special_ids)} present, ids "
           f"{min(special_ids.values())}..{max(special_ids.values())}")
     print(f"  tokenizer.pkl sha:   {_sha256(pkl_path)[:16]}...")
-    print(f"  token_bytes.pt sha:  {_sha256(tb_path)[:16]}...")
+    print(f"  token_bytes.npy sha: {_sha256(tb_path)[:16]}...")
     print(f"  validation:          256/256 bytes, {len(TEST_STRINGS)} test strings, "
           f"{len(snippets)} corpus samples — all clean")
     if full_scan_stats:

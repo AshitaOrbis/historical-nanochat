@@ -1,10 +1,10 @@
 # Historical Nanochat
 
-Build "time-locked" language models using Karpathy's nanochat pipeline, trained exclusively on texts from before specific historical cutoff dates. The resulting models genuinely don't know about events after their cutoff - creating authentic historical worldview simulation.
+Build experimental "time-locked" language models using Karpathy's nanochat pipeline and corpora filtered toward specific historical cutoff dates. The resulting models are intended to approximate historical information states, not to guarantee ignorance of later events.
 
 ## Project Overview
 
-This project extends [nanochat](https://github.com/karpathy/nanochat) to train language models on historical text corpora. Unlike fine-tuning modern models for historical roleplay, these models are trained from scratch on pre-cutoff texts, ensuring genuine temporal ignorance.
+This project extends [nanochat](https://github.com/karpathy/nanochat) to train language models from scratch on historical text corpora. Sources are selected with publication-date metadata and contamination filters to reduce post-cutoff exposure, but effective temporal ignorance must be measured. Annotations, reprints, OCR metadata, semantic anachronisms, and memorized overlap remain documented residual contamination risks.
 
 ### Key Features
 
@@ -29,6 +29,12 @@ pip install -e .
 
 # Or with uv (faster)
 uv pip install -e .
+
+# Install the nested nanochat training environment (choose cpu or gpu)
+cd nanochat
+uv sync --extra gpu
+source .venv/bin/activate
+cd ..
 ```
 
 ## Quick Start
@@ -65,9 +71,13 @@ per-source distributions. Use `--input <files...>` instead of `--data-dir` to
 target specific JSONL files, `--max-tokens` to cap corpus size, or `--no-sample`
 to disable per-source downsampling.
 
-### 3. Train on a single RTX 3090
+### 3. Verify artifacts and train on a single RTX 3090
 
 ```bash
+# The repository includes tokenizer/tokenizer.pkl, tokenizer/token_bytes.npy,
+# and tokenizer/tokenizer_manifest.json. The trainer verifies their hashes,
+# dtype, shape, vocabulary, and BOS identity before allocating the model.
+
 # Point training at the historical shards directly — no base_data/ wrapper needed.
 export NANOCHAT_PARQUET_DIR="$(pwd)/data/processed/shards_1913"
 
@@ -104,8 +114,8 @@ bash speedrun.sh
 
 ## Temporal Cutoffs
 
-| Cutoff | Model Name | What It Doesn't Know |
-|--------|-----------|---------------------|
+| Cutoff | Model Name | Target excluded knowledge (must be evaluated) |
+|--------|-----------|-----------------------------------------------|
 | **1850** | `nanochat-1850` | Telephone, electric light, Darwin's Origin |
 | **1900** | `nanochat-1900` | Airplanes, radio, relativity |
 | **1913** | `nanochat-1913` | WWI, Russian Revolution, Hitler, atomic bomb |
