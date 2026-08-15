@@ -1,0 +1,59 @@
+{
+ "_comment": "expect-side of base_train --expect_json. adamw group order is [lm_head, wte] (gpt.py setup_optimizers). LRs include the 1/sqrt(d_model/768) scale and batch_lr_scale.",
+ "model": {
+  "n_layer": 26,
+  "n_embd": 1664,
+  "n_head": 13,
+  "n_kv_head": 13,
+  "vocab_size": 32768,
+  "num_params": 972947456,
+  "max_seq_len": 2048
+ },
+ "optimizer": {
+  "dmodel_lr_scale": 0.6793662204867574,
+  "adamw_groups_initial_lr": [
+   0.00271746488194703,
+   0.20380986614602722
+  ],
+  "adamw_betas": [
+   [
+    0.8,
+    0.95
+   ],
+   [
+    0.8,
+    0.95
+   ]
+  ],
+  "adamw_weight_decay": [
+   0.0,
+   0.0
+  ],
+  "muon_groups_initial_lr": [
+   0.02
+  ],
+  "batch_lr_scale": 1.0
+ },
+ "schedule": {
+  "num_iterations": 36460,
+  "total_batch_size": 524288,
+  "device_batch_size": 32,
+  "grad_accum_steps": 8,
+  "warmup_ratio": 0.0,
+  "warmdown_ratio": 0.4,
+  "final_lr_frac": 0.0
+ },
+ "tokenizer": {
+  "vocab_size": 32768,
+  "bos_id": 32759,
+  "sha256_tokenizer_pkl": "f4ab5cefc176723b19efe900b48b43ab4ef8946d0aedbe8f7736d9b306144b39",
+  "sha256_token_bytes_npy": "cecfee2fe695b8edede35a6c76e2a362b270d4be93f829d223f6c41e30a3c321"
+ },
+ "data": {
+  "ordering_order_sha256": "5738dcead014cf73531d84c414838abfd9ed61f5bab96b8f41100d1aab888ecc",
+  "ordering_file_sha256": "97000a2afe97f11b826dc246854a62811b3f832f7a42b5451c0f4049db0843cd"
+ },
+ "runtime": {
+  "device_type": "cuda"
+ }
+}

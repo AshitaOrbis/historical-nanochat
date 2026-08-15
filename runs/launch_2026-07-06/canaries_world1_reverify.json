@@ -1,0 +1,104 @@
+{
+ "ordering_sha256": "5738dcead014cf73531d84c414838abfd9ed61f5bab96b8f41100d1aab888ecc",
+ "needed_per_yield": 65537,
+ "world_size": 1,
+ "grad_accum": 8,
+ "canaries": [
+  {
+   "after_yield": 24307,
+   "optimizer_step": 3038,
+   "rank": 0,
+   "shard": "shard_009878.bin",
+   "position": 1576,
+   "offset": 978770
+  },
+  {
+   "after_yield": 48613,
+   "optimizer_step": 6076,
+   "rank": 0,
+   "shard": "shard_010882.bin",
+   "position": 3149,
+   "offset": 604386
+  },
+  {
+   "after_yield": 72920,
+   "optimizer_step": 9115,
+   "rank": 0,
+   "shard": "shard_013777.bin",
+   "position": 4733,
+   "offset": 842438
+  },
+  {
+   "after_yield": 97227,
+   "optimizer_step": 12153,
+   "rank": 0,
+   "shard": "shard_013174.bin",
+   "position": 6316,
+   "offset": 567643
+  },
+  {
+   "after_yield": 121533,
+   "optimizer_step": 15191,
+   "rank": 0,
+   "shard": "shard_00887.bin",
+   "position": 7892,
+   "offset": 1025689
+  },
+  {
+   "after_yield": 145840,
+   "optimizer_step": 18230,
+   "rank": 0,
+   "shard": "shard_004061.bin",
+   "position": 9470,
+   "offset": 324082
+  },
+  {
+   "after_yield": 170147,
+   "optimizer_step": 21268,
+   "rank": 0,
+   "shard": "shard_000297.bin",
+   "position": 11045,
+   "offset": 498375
+  },
+  {
+   "after_yield": 194453,
+   "optimizer_step": 24306,
+   "rank": 0,
+   "shard": "shard_000320.bin",
+   "position": 12624,
+   "offset": 359319
+  },
+  {
+   "after_yield": 218760,
+   "optimizer_step": 27345,
+   "rank": 0,
+   "shard": "shard_005151.bin",
+   "position": 14195,
+   "offset": 831276
+  },
+  {
+   "after_yield": 243067,
+   "optimizer_step": 30383,
+   "rank": 0,
+   "shard": "shard_014202.bin",
+   "position": 15770,
+   "offset": 925416
+  },
+  {
+   "after_yield": 267373,
+   "optimizer_step": 33421,
+   "rank": 0,
+   "shard": "shard_018405.bin",
+   "position": 17349,
+   "offset": 175479
+  },
+  {
+   "after_yield": 291680,
+   "optimizer_step": 36460,
+   "rank": 0,
+   "shard": "shard_017547.bin",
+   "position": 18925,
+   "offset": 639713
+  }
+ ]
+}
