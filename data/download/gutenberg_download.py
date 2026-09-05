@@ -7,8 +7,9 @@ Filters by publication date to ensure temporal cutoff compliance.
 import os
 import json
 import argparse
-from datetime import datetime
+from dataclasses import asdict, dataclass
 from typing import Optional, Iterator, Dict, Any
+import warnings
 from tqdm import tqdm
 from datasets import load_dataset
 import re
@@ -30,85 +31,146 @@ CUTOFF_CONFIGS = {
 # - Safe historical terms list (e.g., "apollo" the god is OK)
 
 
-def extract_year_from_metadata(metadata: Dict[str, Any]) -> Optional[int]:
-    """
-    Extract a publication year from Gutenberg metadata, in precedence order.
+PUBLICATION_DATE_FIELDS = (
+    "issued",
+    "publicationyear",
+    "published",
+    "publication_year",
+)
 
-    Precedence:
-      1. 'issued' or 'publicationyear' or 'published' — closest to publication date.
-      2. 'authoryearofdeath' — upper bound on when the author could have written it.
-         (Books are usually published before the author dies; safer than birth year.)
-      3. 'authoryearofbirth' + 20 as a floor (author likely not publishing before ~age 20).
-      4. Last-resort scan of the metadata JSON for 4-digit years in a plausible range.
 
-    Notable change vs the previous implementation: we no longer treat the
-    `downloads` field as year-bearing — it is a raw count, not a date, and the
-    old code would mis-read "1972" download counts as a 1972 publication year.
+@dataclass(frozen=True)
+class PublicationDateEvidence:
+    year: int
+    source_field: str
+    source_value: str
+    confidence: str
+
+
+def _year_from_value(value: Any) -> Optional[int]:
+    match = re.search(r"\b(1\d{3}|20\d{2})\b", str(value))
+    if not match:
+        return None
+    year = int(match.group(1))
+    return year if 1000 <= year <= 2099 else None
+
+
+def _years_from_value(value: Any) -> list[int]:
+    return [
+        int(year)
+        for year in re.findall(r"\b(1\d{3}|20\d{2})\b", str(value))
+        if 1000 <= int(year) <= 2099
+    ]
+
+
+def extract_publication_date(
+    metadata: Dict[str, Any],
+    text: str = "",
+) -> Optional[PublicationDateEvidence]:
     """
-    # 1. Explicit publication fields.
-    for field in ('issued', 'publicationyear', 'published', 'publication_year', 'date'):
+    Return affirmative publication/issue evidence, never an author-life proxy.
+
+    Only allowlisted metadata fields and explicit "published/printed in YEAR"
+    text phrases qualify. Author dates and free-form metadata years are not
+    publication evidence and are handled only as non-strict diagnostics.
+    """
+    for field in PUBLICATION_DATE_FIELDS:
         value = metadata.get(field)
-        if value:
-            match = re.search(r'(1[0-9]{3}|20[0-2]\d)', str(value))
-            if match:
-                year = int(match.group(1))
-                if 1000 <= year <= 2100:
-                    return year
+        year = _year_from_value(value) if value not in (None, "") else None
+        if year is not None:
+            return PublicationDateEvidence(
+                year=year,
+                source_field=field,
+                source_value=str(value),
+                confidence="validated_publication_field",
+            )
 
-    # 2. Author year of death bounds publication.
-    death = metadata.get('authoryearofdeath')
-    if death:
-        match = re.search(r'(\d{4})', str(death))
+    sample = text[:5000]
+    for label, pattern in (
+        ("text:published", r"\bpublished(?:\s+in)?[^\d]{0,20}(1\d{3}|20\d{2})\b"),
+        ("text:printed", r"\bprinted(?:\s+in)?[^\d]{0,20}(1\d{3}|20\d{2})\b"),
+    ):
+        match = re.search(pattern, sample, re.IGNORECASE)
         if match:
-            year = int(match.group(1))
-            if 1000 <= year <= 2100:
-                return year
-
-    # 3. Author year of birth → rough floor.
-    birth = metadata.get('authoryearofbirth')
-    if birth:
-        match = re.search(r'(\d{4})', str(birth))
-        if match:
-            year = int(match.group(1))
-            if 1000 <= year <= 2100:
-                return year + 20
-
-    # 4. Last resort: scan a JSON dump for a plausible year. Avoid the 'downloads'
-    # field because raw download counts frequently contain 4-digit numbers.
-    safe_metadata = {k: v for k, v in metadata.items() if k != 'downloads'}
-    text_to_search = json.dumps(safe_metadata)
-    year_matches = re.findall(r'\b(1[0-9]{3})\b', text_to_search)
-    if year_matches:
-        years = [int(y) for y in year_matches if 1400 <= int(y) <= 2025]
-        if years:
-            return min(years)
+            return PublicationDateEvidence(
+                year=int(match.group(1)),
+                source_field=label,
+                source_value=match.group(0),
+                confidence="validated_publication_phrase",
+            )
 
     return None
+
+
+def extract_year_from_metadata(metadata: Dict[str, Any]) -> Optional[int]:
+    """Legacy diagnostic helper; never use its hints for strict admission."""
+    evidence = extract_publication_date(metadata)
+    if evidence:
+        return evidence.year
+
+    warnings.warn(
+        "extract_year_from_metadata may return non-binding author/free-form hints; "
+        "use extract_publication_date for admission decisions",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    death = _year_from_value(metadata.get("authoryearofdeath"))
+    if death is not None:
+        return death
+    birth = _year_from_value(metadata.get("authoryearofbirth"))
+    if birth is not None:
+        return birth + 20
+    candidates = []
+    for field, value in metadata.items():
+        if field == "downloads" or value in (None, ""):
+            continue
+        year = _year_from_value(value)
+        if year is not None:
+            candidates.append(year)
+    return min(candidates) if candidates else None
 
 
 def estimate_year_from_text(text: str, max_chars: int = 5000) -> Optional[int]:
-    """
-    Try to estimate publication year from the text itself.
-    Checks the beginning of the text for copyright notices, dates, etc.
-    """
-    sample = text[:max_chars].lower()
+    """Compatibility helper for explicit publication/printing phrases only."""
+    evidence = extract_publication_date({}, text[:max_chars])
+    return evidence.year if evidence else None
 
-    # Look for copyright notices
-    copyright_match = re.search(r'copyright[^\d]*(\d{4})', sample)
-    if copyright_match:
-        return int(copyright_match.group(1))
 
-    # Look for "published in YYYY" or similar
-    published_match = re.search(r'published[^\d]*(\d{4})', sample)
-    if published_match:
-        return int(published_match.group(1))
+def extract_non_strict_date_hint(metadata: Dict[str, Any]) -> Optional[PublicationDateEvidence]:
+    """Compatibility helper returning the first non-binding diagnostic hint."""
+    hints = extract_non_strict_date_hints(metadata)
+    return hints[0] if hints else None
 
-    # Look for "printed in YYYY"
-    printed_match = re.search(r'printed[^\d]*(\d{4})', sample)
-    if printed_match:
-        return int(printed_match.group(1))
 
-    return None
+def extract_non_strict_date_hints(metadata: Dict[str, Any]) -> list[PublicationDateEvidence]:
+    """Return all diagnostic hints; callers may use them only to reject."""
+    hints: list[PublicationDateEvidence] = []
+    for field in ("authoryearofdeath", "authoryearofbirth"):
+        value = metadata.get(field)
+        for year in _years_from_value(value) if value not in (None, "") else []:
+            hints.append(PublicationDateEvidence(
+                    year=year,
+                    source_field=field,
+                    source_value=str(value),
+                    confidence="author_life_hint_non_binding",
+                ))
+
+    for field, value in metadata.items():
+        if (
+            field == "downloads"
+            or field in PUBLICATION_DATE_FIELDS
+            or field in {"authoryearofdeath", "authoryearofbirth"}
+            or value in (None, "")
+        ):
+            continue
+        for year in _years_from_value(value):
+            hints.append(PublicationDateEvidence(
+                year=year,
+                source_field=field,
+                source_value=str(value),
+                confidence="free_form_metadata_hint_non_binding",
+            ))
+    return hints
 
 
 
@@ -142,17 +204,25 @@ def is_text_suitable(
     if lang and 'english' not in lang and 'en' != lang:
         return False, f"Non-English language: {lang}", cleaned_text
 
-    # Try to determine year (use original text for header info)
-    year = extract_year_from_metadata(metadata)
-    if year is None:
-        year = estimate_year_from_text(text)  # Use original for date extraction
+    date_evidence = extract_publication_date(metadata, text)
 
-    if year is not None:
-        if year > cutoff_year:
-            return False, f"Post-cutoff year: {year} > {cutoff_year}", cleaned_text
+    if date_evidence is not None:
+        if date_evidence.year > cutoff_year:
+            return False, (
+                f"Post-cutoff publication year: {date_evidence.year} > {cutoff_year}"
+            ), cleaned_text
     elif strict:
         # In strict mode, reject texts with unknown dates
         return False, "Unknown publication date", cleaned_text
+
+    if not strict:
+        post_cutoff_hints = [
+            hint for hint in extract_non_strict_date_hints(metadata)
+            if hint.year > cutoff_year
+        ]
+        if post_cutoff_hints:
+            year = max(hint.year for hint in post_cutoff_hints)
+            return False, f"Post-cutoff diagnostic year: {year} > {cutoff_year}", cleaned_text
 
     # Check for anachronisms on CLEANED text using improved detection
     if strict:
@@ -200,12 +270,19 @@ def download_gutenberg(
     ds = load_dataset("manu/project_gutenberg", split="en", streaming=streaming)
 
     stats = {
+        "records_requested": 0,
+        "records_fetched": 0,
+        "records_written": 0,
         "total_processed": 0,
         "accepted": 0,
         "rejected": 0,
         "rejection_reasons": {},
         "total_chars": 0,
         "years_distribution": {},
+        "config": {
+            "cutoff_year": cutoff_year,
+            "temporal_filter_mode": "strict" if strict else "non_strict",
+        },
     }
 
     output_file = os.path.join(output_dir, f"gutenberg_{cutoff}.jsonl")
@@ -215,6 +292,8 @@ def download_gutenberg(
             if max_docs and i >= max_docs:
                 break
 
+            stats["records_requested"] += 1
+            stats["records_fetched"] += 1
             stats["total_processed"] += 1
 
             text = doc.get('text', '')
@@ -226,14 +305,18 @@ def download_gutenberg(
 
             if suitable:
                 stats["accepted"] += 1
+                stats["records_written"] += 1
                 stats["total_chars"] += len(cleaned_text)
 
                 # Record year + provenance (so downstream audits can trace which field gave us the year)
-                year_from_metadata = extract_year_from_metadata(metadata)
-                year_from_text = None if year_from_metadata is not None else estimate_year_from_text(text)
-                year = year_from_metadata if year_from_metadata is not None else year_from_text
-                year_source = ("metadata" if year_from_metadata is not None else
-                               "text" if year_from_text is not None else "unknown")
+                publication_date = extract_publication_date(metadata, text)
+                date_diagnostics = (
+                    extract_non_strict_date_hints(metadata) if not strict else []
+                )
+                year_evidence = publication_date or (
+                    date_diagnostics[0] if date_diagnostics else None
+                )
+                year = year_evidence.year if year_evidence else None
                 if year:
                     decade = (year // 10) * 10
                     stats["years_distribution"][decade] = stats["years_distribution"].get(decade, 0) + 1
@@ -243,8 +326,11 @@ def download_gutenberg(
                     "text": cleaned_text,
                     "source": "gutenberg",
                     "metadata": metadata,
-                    "estimated_year": year,
-                    "year_source": year_source,
+                    "publication_date": asdict(publication_date) if publication_date else None,
+                    "date_diagnostics": [asdict(item) for item in date_diagnostics],
+                    "temporal_filter_status": (
+                        "STRICT_PUBLICATION_DATE" if strict else "NON_STRICT"
+                    ),
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + '\n')
             else:
@@ -262,6 +348,19 @@ def download_gutenberg(
     print(f"  Rejected: {stats['rejected']}")
     print(f"  Total chars: {stats['total_chars']:,}")
     print(f"  Output: {output_file}")
+    print(
+        "  Acquisition counts: "
+        f"requested={stats['records_requested']} "
+        f"fetched={stats['records_fetched']} "
+        f"written={stats['records_written']}"
+    )
+
+    if stats["records_written"] == 0:
+        raise RuntimeError(
+            "Project Gutenberg acquired no records "
+            f"(requested={stats['records_requested']}, "
+            f"fetched={stats['records_fetched']}, written=0)"
+        )
 
     return stats
 

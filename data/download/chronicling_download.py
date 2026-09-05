@@ -112,6 +112,9 @@ def download_chronicling_america(
     print(f"Output directory: {output_dir}")
 
     stats = {
+        "records_requested": 0,
+        "records_fetched": 0,
+        "records_written": 0,
         "total_processed": 0,
         "accepted": 0,
         "rejected": 0,
@@ -160,7 +163,7 @@ def download_chronicling_america(
                             raise
 
                 if results is None:
-                    break
+                    raise RuntimeError("Chronicling America search returned no response")
 
                 # New loc.gov API uses 'pagination' and 'results' fields
                 if total_results is None:
@@ -181,6 +184,7 @@ def download_chronicling_america(
                     if max_pages and stats["accepted"] >= max_pages:
                         break
 
+                    stats["records_requested"] += 1
                     stats["total_processed"] += 1
 
                     # Extract metadata - new API uses different field names
@@ -241,6 +245,7 @@ def download_chronicling_america(
                             stats["rejected"] += 1
                             continue
 
+                        stats["records_fetched"] += 1
                         text = response.text.strip()
 
                         if len(text) < 100:
@@ -248,6 +253,7 @@ def download_chronicling_america(
                             continue
 
                         stats["accepted"] += 1
+                        stats["records_written"] += 1
                         stats["total_chars"] += len(text)
 
                         # Record statistics
@@ -302,7 +308,7 @@ def download_chronicling_america(
                 print(f"Error on page {page_num}: {e}")
                 import traceback
                 traceback.print_exc()
-                break
+                raise RuntimeError("Chronicling America acquisition failed") from e
 
     # Save stats
     stats_file = os.path.join(output_dir, f"newspapers_{cutoff}_stats.json")
@@ -314,7 +320,18 @@ def download_chronicling_america(
     print(f"  Accepted: {stats['accepted']}")
     print(f"  Total chars: {stats['total_chars']:,}")
     print(f"  Output: {output_file}")
+    print(
+        "  Acquisition counts: "
+        f"requested={stats['records_requested']} "
+        f"fetched={stats['records_fetched']} written={stats['records_written']}"
+    )
 
+    if stats["records_written"] == 0:
+        raise RuntimeError(
+            "Chronicling America acquired no records "
+            f"(requested={stats['records_requested']}, "
+            f"fetched={stats['records_fetched']}, written=0)"
+        )
     return stats
 
 

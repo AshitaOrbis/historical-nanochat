@@ -44,11 +44,12 @@ import logging
 import random
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional, AsyncGenerator
 from dataclasses import dataclass
 from contextlib import nullcontext
+from starlette.middleware.base import BaseHTTPMiddleware
 from nanochat.common import compute_init, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
 from nanochat.engine import Engine
@@ -233,7 +234,44 @@ async def lifespan(app: FastAPI):
     print(f"Server ready at http://localhost:{args.port}")
     yield
 
+
+class LoopbackOriginPolicy(BaseHTTPMiddleware):
+    """Grant browser API access only to this server's loopback origins."""
+
+    def __init__(self, app, port: int):
+        super().__init__(app)
+        self.origins = {
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+        }
+
+    async def dispatch(self, request, call_next):
+        origin = request.headers.get("origin")
+        requested_method = request.headers.get("access-control-request-method")
+        is_preflight = request.method == "OPTIONS" and requested_method is not None
+
+        if is_preflight:
+            if origin not in self.origins or requested_method != "POST":
+                return Response(status_code=400)
+            return Response(
+                status_code=200,
+                headers={
+                    "access-control-allow-origin": origin,
+                    "access-control-allow-methods": "POST",
+                    "access-control-allow-headers": "content-type",
+                    "vary": "Origin",
+                },
+            )
+
+        response = await call_next(request)
+        if origin in self.origins and request.method == "POST":
+            response.headers["access-control-allow-origin"] = origin
+            response.headers.add_vary_header("Origin")
+        return response
+
+
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(LoopbackOriginPolicy, port=args.port)
 
 @app.get("/")
 async def root():

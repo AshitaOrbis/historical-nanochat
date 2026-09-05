@@ -20,17 +20,42 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
 
     Perfect state resumption is possible but would be a lot more bloated, probably not worth it atm.
     """
-    assert split in ["train", "val"], "split must be 'train' or 'val'"
-
-    # infinite iterator over document batches (list of text strings)
-    ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
-    def document_batches():
-        parquet_paths = list_parquet_files(data_dir=parquet_dir)
-        assert len(parquet_paths) != 0, (
+    if split not in ("train", "val"):
+        raise ValueError("split must be 'train' or 'val'")
+    all_parquet_paths = list_parquet_files(data_dir=parquet_dir)
+    if not all_parquet_paths:
+        raise RuntimeError(
             f"No dataset parquet files found in {parquet_dir or '<NANOCHAT_PARQUET_DIR or <base_dir>/base_data>'}. "
-            "Either run `python -m nanochat.dataset` to download FineWeb, or set NANOCHAT_PARQUET_DIR to your shard directory."
+            "Either run `python -m nanochat.dataset` to download FineWeb, or set "
+            "NANOCHAT_PARQUET_DIR to your shard directory."
         )
-        parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
+    if len(all_parquet_paths) < 2:
+        raise RuntimeError(
+            "Legacy raw train/validation splitting requires at least two parquet "
+            "shards. Supply a separate validation corpus or deterministically split "
+            "the source before training; one shard must never serve both splits."
+        )
+    parquet_paths = (
+        all_parquet_paths[:-1] if split == "train" else all_parquet_paths[-1:]
+    )
+    if resume_state_dict is not None:
+        if not isinstance(resume_state_dict, dict):
+            raise RuntimeError("raw loader resume state must be an object")
+        resume_pq_idx = resume_state_dict.get("pq_idx")
+        if (
+            not isinstance(resume_pq_idx, int)
+            or isinstance(resume_pq_idx, bool)
+            or not 0 <= resume_pq_idx < len(parquet_paths)
+        ):
+            raise RuntimeError(
+                f"raw loader resume pq_idx={resume_pq_idx!r} is outside the "
+                f"split parquet domain 0..{len(parquet_paths) - 1}"
+            )
+
+    # Resolve split cardinality before returning the generator. This prevents an
+    # empty training list from becoming an infinite, non-yielding iterator.
+    _ddp, ddp_rank, _ddp_local_rank, ddp_world_size = get_dist_info()
+    def document_batches():
         resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
         resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None
         first_pass = True
@@ -61,35 +86,37 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
                     rg_idx += ddp_world_size # advance to the next row group (in DDP)
                 pq_idx += 1 # advance to the next parquet file
             first_pass = False
-    batches = document_batches()
+    def iterator():
+        batches = document_batches()
+        needed_tokens = B * T + 1
+        tokenizer = get_tokenizer()
+        bos_token = tokenizer.get_bos_token_id()
+        token_buffer = deque()
+        while True:
+            while len(token_buffer) < needed_tokens:
+                doc_batch, (pq_idx, rg_idx) = next(batches)
+                token_lists = tokenizer.encode(
+                    doc_batch, prepend=bos_token, num_threads=tokenizer_threads
+                )
+                for tokens in token_lists:
+                    token_buffer.extend(tokens)
+            tokens = [token_buffer.popleft() for _ in range(needed_tokens)]
+            use_cuda_optimizations = device == "cuda"
+            scratch = torch.tensor(
+                tokens, dtype=torch.long, pin_memory=use_cuda_optimizations
+            )
+            inputs_cpu = scratch[:-1]
+            targets_cpu = scratch[1:]
+            inputs = inputs_cpu.view(B, T).to(
+                device=device, non_blocking=use_cuda_optimizations
+            )
+            targets = targets_cpu.view(B, T).to(
+                device=device, non_blocking=use_cuda_optimizations
+            )
+            state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx}
+            yield inputs, targets, state_dict
 
-    # Now emit batches of tokens.
-    needed_tokens = B * T + 1 # +1 is because we also need the target at the last token
-    # get the tokenizer and the bos token
-    tokenizer = get_tokenizer()
-    bos_token = tokenizer.get_bos_token_id()
-    # scratch buffer holds the tokens for one iteration
-    token_buffer = deque() # we stream tokens on the right and pop from the left
-    while True:
-        # Accumulate enough tokens for one iteration before yielding.
-        while len(token_buffer) < needed_tokens:
-            doc_batch, (pq_idx, rg_idx) = next(batches)
-            token_lists = tokenizer.encode(doc_batch, prepend=bos_token, num_threads=tokenizer_threads)
-            for tokens in token_lists:
-                token_buffer.extend(tokens)
-        # Move tokens from the deque into the scratch buffer
-        tokens = [token_buffer.popleft() for _ in range(needed_tokens)]
-        # CUDA supports memory pinning for asynchronous transfers between CPU and GPU
-        use_cuda_optimizations = device == "cuda"
-        scratch = torch.tensor(tokens, dtype=torch.long, pin_memory=use_cuda_optimizations) # in PyTorch, long=int64
-        # Create the inputs/targets as 1D tensors
-        inputs_cpu = scratch[:-1]
-        targets_cpu = scratch[1:]
-        # Reshape to 2D and move to GPU async
-        inputs = inputs_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
-        targets = targets_cpu.view(B, T).to(device=device, non_blocking=use_cuda_optimizations)
-        state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx} # we need this in case we wish to approximately resume training
-        yield inputs, targets, state_dict
+    return iterator()
 
 def tokenizing_distributed_data_loader(*args, **kwargs):
     # helper function that only emits the inputs/targets and not the state_dict

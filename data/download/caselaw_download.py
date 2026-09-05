@@ -239,6 +239,9 @@ def download_caselaw(
     print(f"Output directory: {output_dir}")
 
     stats = {
+        "records_requested": 0,
+        "records_fetched": 0,
+        "records_written": 0,
         "total_processed": 0,
         "skipped_modern": 0,
         "accepted": 0,
@@ -283,7 +286,9 @@ def download_caselaw(
         with open(os.path.join(output_dir, "README.json"), 'w') as f:
             json.dump(instructions, f, indent=2)
 
-        return stats
+        raise RuntimeError(
+            "Caselaw acquired no records (requested=0, fetched=0, written=0)"
+        ) from e
 
     with open(output_file, 'w', encoding='utf-8') as f:
         for i, case in enumerate(tqdm(ds, desc="Processing cases")):
@@ -295,6 +300,8 @@ def download_caselaw(
                 print(f"\nReached max_total limit ({max_total} processed)")
                 break
 
+            stats["records_requested"] += 1
+            stats["records_fetched"] += 1
             case_id = case.get('id', '')
 
             # Skip modern reporters if requested
@@ -325,6 +332,7 @@ def download_caselaw(
 
             if suitable:
                 stats["accepted"] += 1
+                stats["records_written"] += 1
                 stats["total_chars"] += len(text)
 
                 year = extract_case_year(case)
@@ -365,6 +373,11 @@ def download_caselaw(
     print(f"  Accepted: {stats['accepted']:,}")
     print(f"  Rejected: {stats['rejected']:,}")
     print(f"  Total chars: {stats['total_chars']:,}")
+    print(
+        "  Acquisition counts: "
+        f"requested={stats['records_requested']} "
+        f"fetched={stats['records_fetched']} written={stats['records_written']}"
+    )
 
     if stats['years_distribution']:
         print(f"\nYears distribution:")
@@ -382,6 +395,12 @@ def download_caselaw(
         for reporter, count in top_reporters:
             print(f"  {reporter}: {count:,}")
 
+    if stats["records_written"] == 0:
+        raise RuntimeError(
+            "Caselaw acquired no records "
+            f"(requested={stats['records_requested']}, "
+            f"fetched={stats['records_fetched']}, written=0)"
+        )
     return stats
 
 

@@ -30,6 +30,7 @@ from nanochat.dataloader_cached import (
     cached_distributed_data_loader,
     cached_distributed_data_loader_with_state,
     cached_family_balanced_data_loader_with_state,
+    load_verified_shard_ordering,
 )
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
@@ -39,7 +40,13 @@ from nanochat.artifact_guard import (
     validate_tokenizer_artifacts,
 )
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint, save_bf16_snapshot
-from nanochat.train_guards import parse_steps_list, load_canaries, check_canary, assert_expected_resolved
+from nanochat.train_guards import (
+    assert_expected_resolved,
+    check_canary,
+    load_canaries,
+    parse_steps_list,
+    require_future_canary,
+)
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
 from scripts.base_eval import evaluate_model
@@ -86,6 +93,12 @@ parser.add_argument("--canary_file", type=str, default=None,
                     help="JSON of traversal canaries (Tier-1). Validated against ordering SHA, "
                          "world size, batch geometry at startup; asserted per-yield at runtime. "
                          "A mismatch aborts the run (wrong corpus traversal).")
+parser.add_argument(
+    "--allow_legacy_canary_not_run",
+    action="store_true",
+    help="Recognize a pre-run_id canary file as explicit NOT_RUN and stop cleanly. "
+         "This does not permit training without a bound canary.",
+)
 parser.add_argument("--expect_json", type=str, default=None,
                     help="JSON of expected RESOLVED config (model dims, per-group initial LRs incl. "
                          "the 1/sqrt(d_model/768) AdamW scale, tokenizer/ordering hashes). "
@@ -375,9 +388,11 @@ _ordering_order_sha = None
 _ord_path = None
 if args.token_cache_dir:
     _ord_path = os.path.join(args.token_cache_dir, "shard_ordering.json")
-    if os.path.exists(_ord_path):
-        with open(_ord_path) as _f:
-            _ordering_order_sha = json.load(_f).get("order_sha256")
+    _ordering_doc = load_verified_shard_ordering(
+        args.token_cache_dir, require_vocab_size=True
+    )
+    if _ordering_doc is not None:
+        _ordering_order_sha = _ordering_doc["order_sha256"]
 
 def _sha256_file(p):
     import hashlib
@@ -421,7 +436,9 @@ if args.expect_json:
         },
         "runtime": {"device_type": device_type},
     }
-    _checked = assert_expected_resolved(_expected, resolved_config)
+    _checked = assert_expected_resolved(
+        _expected, resolved_config, require_full_schema=True
+    )
     print0(f"[expect] {len(_checked)} resolved-config assertions PASSED against {args.expect_json}")
     if master_process and args.benchmark_csv:
         _res_path = os.path.join(
@@ -446,9 +463,14 @@ if args.canary_file:
         world_size=ddp_world_size,
         grad_accum=grad_accum_steps,
         ordering_sha256=_ordering_order_sha,
+        run_id=args.model_tag or args.run,
+        allow_legacy_missing_run_id=args.allow_legacy_canary_not_run,
     )
+    if canary_by_yield.status == "NOT_RUN":
+        print0(f"[canary] NOT_RUN: {canary_by_yield.reason}")
+        raise SystemExit(2)
     canary_yields = {after_yield for after_yield, _rank in canary_by_yield}
-    _pending = sum(1 for after_yield in canary_yields if after_yield > consumed_yields)
+    _pending = require_future_canary(canary_yields, consumed_yields)
     print0(f"[canary] loaded {len(canary_by_yield)} rank canaries across "
            f"{len(canary_yields)} yields from {args.canary_file}; "
            f"{_pending} yields ahead of {consumed_yields}")
@@ -477,6 +499,7 @@ def build_train_loader(B, T, resume_state_dict):
                 cache_dir=args.token_cache_dir,
                 grad_accum_steps=grad_accum_steps,
                 resume_state_dict=resume_state_dict,
+                strict_manifest_schema=True,
             )
         # sequential_cache: legacy behavior (v4 layout uses split='all' when val_cache_dir is set)
         split = "all" if args.val_cache_dir else "train"
@@ -484,6 +507,7 @@ def build_train_loader(B, T, resume_state_dict):
             B, T, split=split, device=device,
             cache_dir=args.token_cache_dir,
             resume_state_dict=resume_state_dict,
+            strict_manifest_schema=True,
         )
     return tokenizing_distributed_data_loader_with_state(
         B, T, split="train", device=device,
@@ -497,9 +521,11 @@ def build_val_loader_fn(B, T):
             # v4: explicit val cache dir, use all shards in it
             return lambda: cached_distributed_data_loader(
                 B, T, split="all", device=device, cache_dir=args.val_cache_dir,
+                strict_manifest_schema=True,
             )
         return lambda: cached_distributed_data_loader(
             B, T, split="val", device=device, cache_dir=args.token_cache_dir,
+            strict_manifest_schema=True,
         )
     return lambda: tokenizing_distributed_data_loader(
         B, T, split="val", device=device, parquet_dir=args.parquet_dir,

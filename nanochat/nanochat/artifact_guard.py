@@ -11,6 +11,7 @@ import torch
 
 IDENTITY_KEYS = (
     "contract_version",
+    "build_config_sha256",
     "tokenizer_sha256",
     "token_bytes_sha256",
     "vocab_size",
@@ -46,6 +47,47 @@ def _artifact_path(base_dir: Path, relative: str, field: str) -> Path:
     return path
 
 
+def _build_config_sha256(manifest: dict) -> str:
+    """Hash only reproducibility-relevant build inputs, not timestamps/timing."""
+    training = manifest.get("training")
+    inputs = manifest.get("inputs")
+    if training is not None and not isinstance(training, dict):
+        raise RuntimeError("tokenizer manifest training field must be an object")
+    if inputs is not None and not isinstance(inputs, dict):
+        raise RuntimeError("tokenizer manifest inputs field must be an object")
+    script_version = manifest.get("script_version")
+    if script_version is not None and (
+        not isinstance(script_version, str) or not script_version
+    ):
+        raise RuntimeError(
+            "tokenizer manifest script_version must be a non-empty string or null"
+        )
+    git_commit = manifest.get("git_commit")
+    if git_commit is not None and (
+        not isinstance(git_commit, str) or not git_commit
+    ):
+        raise RuntimeError(
+            "tokenizer manifest git_commit must be a non-empty string or null"
+        )
+    training = training or {}
+    build_config = {
+        "script_version": script_version,
+        "git_commit": git_commit,
+        "training": {
+            "max_chars": training.get("max_chars"),
+            "doc_cap": training.get("doc_cap"),
+        },
+        "inputs": inputs,
+    }
+    canonical = json.dumps(
+        build_config,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def validate_tokenizer_artifacts(base_dir, tokenizer, token_bytes: torch.Tensor) -> dict:
     """Validate the complete tokenizer bundle and return its canonical identity."""
     base_dir = Path(base_dir)
@@ -65,12 +107,15 @@ def validate_tokenizer_artifacts(base_dir, tokenizer, token_bytes: torch.Tensor)
         raise RuntimeError("tokenizer.special_tokens must be an object")
     manifest_bos = _required(special_tokens, "<|bos|>", "tokenizer.special_tokens")
 
+    tokenizer_dir = base_dir.resolve() / "tokenizer"
     if "tokenizer_pkl" in outputs:
         tokenizer_path_field = "tokenizer_pkl"
         tokenizer_sha_field = "sha256_tokenizer_pkl"
+        canonical_tokenizer_name = "tokenizer.pkl"
     elif "tokenizer_json" in outputs:
         tokenizer_path_field = "tokenizer_json"
         tokenizer_sha_field = "sha256_tokenizer_json"
+        canonical_tokenizer_name = "tokenizer.json"
     else:
         raise RuntimeError(
             "tokenizer manifest outputs must declare tokenizer_pkl or tokenizer_json"
@@ -80,11 +125,42 @@ def validate_tokenizer_artifacts(base_dir, tokenizer, token_bytes: torch.Tensor)
         _required(outputs, tokenizer_path_field, "outputs"),
         f"outputs.{tokenizer_path_field}",
     )
+    # get_tokenizer() never reads the manifest: it always loads from the fixed
+    # canonical filename for the declared format. If the manifest points somewhere
+    # else, the file we hash below is not the file that will actually be loaded.
+    canonical_tokenizer_path = (tokenizer_dir / canonical_tokenizer_name).resolve()
+    if tokenizer_path != canonical_tokenizer_path:
+        raise RuntimeError(
+            f"outputs.{tokenizer_path_field} must resolve to the canonical loader "
+            f"path {canonical_tokenizer_path}, got {tokenizer_path}: get_tokenizer() "
+            "only ever reads the fixed canonical filename, so a manifest pointing "
+            "elsewhere never describes the artifact that is actually loaded"
+        )
+    if canonical_tokenizer_name == "tokenizer.json" and (tokenizer_dir / "tokenizer.pkl").is_file():
+        # get_tokenizer() prefers tokenizer.pkl unconditionally when it exists on
+        # disk, regardless of which format the manifest declares. A stale pickle
+        # left over from an earlier build would silently be loaded instead of the
+        # JSON tokenizer this manifest attests.
+        raise RuntimeError(
+            "a stale tokenizer.pkl exists alongside a tokenizer_json manifest entry; "
+            "get_tokenizer() prefers tokenizer.pkl unconditionally and would load a "
+            "different tokenizer than the one this manifest attests. Remove the stale "
+            "pickle or regenerate the manifest to describe it."
+        )
     token_bytes_path = _artifact_path(
         base_dir,
         _required(outputs, "token_bytes_npy", "outputs"),
         "outputs.token_bytes_npy",
     )
+    # get_token_bytes() likewise always reads the canonical token_bytes.npy path;
+    # an alternate manifest-declared byte table is never the table actually loaded.
+    canonical_token_bytes_path = (tokenizer_dir / "token_bytes.npy").resolve()
+    if token_bytes_path != canonical_token_bytes_path:
+        raise RuntimeError(
+            f"outputs.token_bytes_npy must resolve to the canonical loader path "
+            f"{canonical_token_bytes_path}, got {token_bytes_path}: get_token_bytes() "
+            "always reads the fixed canonical filename regardless of manifest content"
+        )
     expected_tokenizer_sha = _required(outputs, tokenizer_sha_field, "outputs")
     expected_token_bytes_sha = _required(outputs, "sha256_token_bytes_npy", "outputs")
     actual_tokenizer_sha = sha256_file(tokenizer_path)
@@ -126,7 +202,8 @@ def validate_tokenizer_artifacts(base_dir, tokenizer, token_bytes: torch.Tensor)
         )
 
     return {
-        "contract_version": 1,
+        "contract_version": 2,
+        "build_config_sha256": _build_config_sha256(manifest),
         "tokenizer_sha256": actual_tokenizer_sha,
         "token_bytes_sha256": actual_token_bytes_sha,
         "vocab_size": runtime_vocab,

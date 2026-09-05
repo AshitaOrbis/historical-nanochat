@@ -40,6 +40,10 @@ def _maybe_apply_shard_ordering(cache_dir: str, shard_entries: list[dict]):
         return shard_entries, None
     with open(ordering_path) as f:
         doc = json.load(f)
+    if not isinstance(doc, dict) or doc.get("version") != 1:
+        raise RuntimeError(
+            f"shard_ordering.json in {cache_dir} must be a version 1 JSON object"
+        )
     manifest_path = os.path.join(cache_dir, "cache_manifest.json")
     with open(manifest_path, "rb") as f:
         manifest_sha = hashlib.sha256(f.read()).hexdigest()
@@ -54,16 +58,39 @@ def _maybe_apply_shard_ordering(cache_dir: str, shard_entries: list[dict]):
     for e in shard_entries:
         fn = e.get("filename") or f"shard_{e['shard_index']:05d}.bin"
         by_name[fn] = e
-    order = doc.get("order", [])
+    order = doc.get("order")
+    if not isinstance(order, list) or any(
+        not isinstance(name, str) or not name for name in order
+    ):
+        raise RuntimeError(
+            f"shard_ordering.json in {cache_dir} requires a non-empty filename list"
+        )
     if len(order) != len(shard_entries) or set(order) != set(by_name.keys()):
         raise RuntimeError(
             f"shard_ordering.json in {cache_dir} does not cover the manifest exactly "
             f"(ordering has {len(order)} names, manifest has {len(shard_entries)} shards)."
         )
+    derived_order_sha256 = hashlib.sha256("\n".join(order).encode()).hexdigest()
+    if doc.get("order_sha256") != derived_order_sha256:
+        raise RuntimeError(
+            f"shard_ordering.json in {cache_dir} has an invalid order_sha256: "
+            f"stored={doc.get('order_sha256')!r}, derived={derived_order_sha256}. "
+            "The traversal identity must be derived from the ordered shard filenames."
+        )
     return [by_name[n] for n in order], doc
 
 
-def _load_manifest(cache_dir: str) -> dict:
+def load_verified_shard_ordering(
+    cache_dir: str, *, require_vocab_size: bool = False
+) -> dict | None:
+    """Return the ordering document only after independently verifying its hash."""
+    manifest = _load_manifest(cache_dir, require_vocab_size=require_vocab_size)
+    entries = sorted(manifest["shards"], key=lambda entry: entry["shard_index"])
+    _entries, ordering_doc = _maybe_apply_shard_ordering(cache_dir, entries)
+    return ordering_doc
+
+
+def _load_manifest(cache_dir: str, *, require_vocab_size: bool = False) -> dict:
     manifest_path = os.path.join(cache_dir, "cache_manifest.json")
     if not os.path.exists(manifest_path):
         raise FileNotFoundError(
@@ -84,8 +111,31 @@ def _load_manifest(cache_dir: str) -> dict:
     if not isinstance(shards, list):
         raise ValueError(f"{manifest_path}: shards must be a list")
 
+    vocab_size = manifest.get("vocab_size")
+    if require_vocab_size and vocab_size is None:
+        raise ValueError(
+            f"{manifest_path}: strict cache schema requires vocab_size"
+        )
+    if vocab_size is not None and (
+        not isinstance(vocab_size, int) or isinstance(vocab_size, bool)
+        or vocab_size <= 0
+    ):
+        raise ValueError(f"{manifest_path}: vocab_size must be a positive integer")
+    tokenizer_identity = manifest.get("tokenizer_identity")
+    if tokenizer_identity is not None:
+        if not isinstance(tokenizer_identity, dict):
+            raise ValueError(f"{manifest_path}: tokenizer_identity must be an object")
+        identity_vocab_size = tokenizer_identity.get("vocab_size")
+        if vocab_size is not None and identity_vocab_size != vocab_size:
+            raise ValueError(
+                f"{manifest_path}: vocab_size={vocab_size} does not match "
+                f"tokenizer_identity.vocab_size={identity_vocab_size!r}"
+            )
+
     itemsize = dtype.itemsize
     seen_indices = set()
+    seen_filenames = set()
+    cache_root = Path(cache_dir).resolve()
     for position, entry in enumerate(shards):
         if not isinstance(entry, dict):
             raise ValueError(f"{manifest_path}: shard entry {position} must be an object")
@@ -95,13 +145,27 @@ def _load_manifest(cache_dir: str) -> dict:
             raise ValueError(
                 f"{manifest_path}: shard_index must be a unique integer (entry {position})"
             )
-        if not isinstance(tokens, int) or tokens < 0:
+        if not isinstance(tokens, int) or tokens <= 0:
             raise ValueError(
-                f"{manifest_path}: shard {shard_index} requires a non-negative integer tokens field"
+                f"{manifest_path}: shard {shard_index} requires a positive integer tokens field"
             )
         seen_indices.add(shard_index)
         filename = entry.get("filename") or f"shard_{shard_index:05d}.bin"
-        shard_path = os.path.join(cache_dir, filename)
+        if not isinstance(filename, str) or not filename:
+            raise ValueError(
+                f"{manifest_path}: shard {shard_index} filename must be a non-empty string"
+            )
+        if filename in seen_filenames:
+            raise ValueError(
+                f"{manifest_path}: duplicate shard filename {filename!r}"
+            )
+        seen_filenames.add(filename)
+        resolved_shard_path = (cache_root / filename).resolve()
+        if cache_root not in resolved_shard_path.parents:
+            raise ValueError(
+                f"{manifest_path}: shard {shard_index} filename escapes the cache directory"
+            )
+        shard_path = str(resolved_shard_path)
         try:
             actual_bytes = os.path.getsize(shard_path)
         except FileNotFoundError as exc:
@@ -119,6 +183,21 @@ def _load_manifest(cache_dir: str) -> dict:
                 f"{manifest_path}: shard {shard_index} declares bytes={entry['bytes']} "
                 f"but tokens*dtype.itemsize={expected_bytes}"
             )
+        if vocab_size is not None:
+            # A bounded first/middle/last sample catches width/version corruption
+            # without scanning multi-hundred-GB caches during startup.
+            window = min(tokens, 256)
+            starts = sorted({0, max(0, tokens // 2 - window // 2), tokens - window})
+            with open(shard_path, "rb") as shard_file:
+                for start in starts:
+                    shard_file.seek(start * itemsize)
+                    raw = shard_file.read(window * itemsize)
+                    sampled = np.frombuffer(raw, dtype=dtype)
+                    if sampled.size and int(sampled.max()) >= vocab_size:
+                        raise RuntimeError(
+                            f"{shard_path}: sampled token id {int(sampled.max())} is "
+                            f"outside declared vocab_size={vocab_size}"
+                        )
     return manifest
 
 
@@ -148,6 +227,7 @@ def cached_distributed_data_loader_with_state(
     device: str = "cuda",
     cache_dir: str = None,
     resume_state_dict: dict = None,
+    strict_manifest_schema: bool = False,
 ):
     """
     Infinite loader over mmap'd token cache files.
@@ -167,10 +247,14 @@ def cached_distributed_data_loader_with_state(
     stream (older checkpoints saved the read-ahead cursor and could silently skip
     up to ~1M buffered tokens per rank on restart).
     """
-    assert split in ("train", "val", "all"), "split must be 'train' | 'val' | 'all'"
-    assert cache_dir is not None, "cache_dir is required"
+    if split not in ("train", "val", "all"):
+        raise ValueError("split must be 'train' | 'val' | 'all'")
+    if cache_dir is None:
+        raise ValueError("cache_dir is required")
 
-    manifest = _load_manifest(cache_dir)
+    manifest = _load_manifest(
+        cache_dir, require_vocab_size=strict_manifest_schema
+    )
     dtype = _dtype_from_str(manifest["dtype"], manifest["byte_order"])
     shard_entries = sorted(manifest["shards"], key=lambda e: e["shard_index"])
 
@@ -179,8 +263,14 @@ def cached_distributed_data_loader_with_state(
     #   "val"   - legacy: only the last shard
     #   "all"   - v4+: use every shard in this cache dir; callers supply
     #             train and val as SEPARATE cache dirs.
+    if split in ("train", "val") and len(shard_entries) < 2:
+        raise RuntimeError(
+            f"Legacy cached split={split!r} requires at least two shards so validation "
+            "cannot alias training data. Supply a separate validation cache and use "
+            "split='all', or rebuild the cache with at least two shards."
+        )
     if split == "train":
-        shard_entries = shard_entries[:-1] if len(shard_entries) > 1 else shard_entries
+        shard_entries = shard_entries[:-1]
     elif split == "val":
         shard_entries = shard_entries[-1:]
     # "all": leave shard_entries as-is
@@ -211,24 +301,6 @@ def cached_distributed_data_loader_with_state(
             "parquet dataloader which shards at row-group granularity."
         )
 
-    # Per-rank resume: state_dict stores {rank: (shard_idx, token_off)} so each rank
-    # restores its OWN cursor without getting confused by another rank's state.
-    per_rank_state = (resume_state_dict or {}).get("per_rank", {})
-    rank_key = str(rank)
-    if rank_key in per_rank_state:
-        shard_cursor = per_rank_state[rank_key].get("shard_idx", owned[0])
-        token_cursor = per_rank_state[rank_key].get("token_off", 0)
-    else:
-        # Back-compat: if an older single-state dict is passed, use it only if
-        # the saved shard_idx is owned by this rank; otherwise start from this
-        # rank's first owned shard.
-        saved_shard = (resume_state_dict or {}).get("shard_idx", owned[0])
-        shard_cursor = saved_shard if saved_shard % world_size == rank else owned[0]
-        token_cursor = (resume_state_dict or {}).get("token_off", 0) if shard_cursor == saved_shard else 0
-
-    token_buffer = deque()
-    use_cuda = str(device).startswith("cuda")
-
     def shard_path(entry):
         # manifest stored either the raw filename or the full path; normalize.
         fn = entry.get("filename") or f"shard_{entry['shard_index']:05d}.bin"
@@ -248,6 +320,86 @@ def cached_distributed_data_loader_with_state(
         return t
 
     entry_tokens = [_entry_num_tokens(e) for e in shard_entries]
+    ordered_filenames = [
+        entry.get("filename") or f"shard_{entry['shard_index']:05d}.bin"
+        for entry in shard_entries
+    ]
+    traversal_sha256 = hashlib.sha256("\n".join(ordered_filenames).encode()).hexdigest()
+    with open(os.path.join(cache_dir, "cache_manifest.json"), "rb") as manifest_file:
+        manifest_sha256 = hashlib.sha256(manifest_file.read()).hexdigest()
+    resume_contract = {
+        "version": 1,
+        "loader_strategy": "sequential_cache",
+        "cache_manifest_sha256": manifest_sha256,
+        "shard_ordering_sha256": (
+            _ordering_doc["order_sha256"] if split == "all" and _ordering_doc else None
+        ),
+        "traversal_sha256": traversal_sha256,
+        "split": split,
+        "batch_size": B,
+        "sequence_length": T,
+        "world_size": world_size,
+    }
+
+    # Resume coordinates are meaningful only under the exact cache/order/geometry
+    # that produced them. The contract is embedded per rank so DDP state merging
+    # cannot accidentally discard it.
+    rank_key = str(rank)
+    if resume_state_dict is not None:
+        if not isinstance(resume_state_dict, dict):
+            raise RuntimeError("sequential resume state must be an object")
+        per_rank_state = resume_state_dict.get("per_rank")
+        if not isinstance(per_rank_state, dict) or rank_key not in per_rank_state:
+            raise RuntimeError(
+                f"sequential resume is missing the bound per_rank[{rank}] cursor"
+            )
+        rank_state = per_rank_state[rank_key]
+        if not isinstance(rank_state, dict):
+            raise RuntimeError(f"sequential resume per_rank[{rank}] must be an object")
+        saved_contract = rank_state.get("resume_contract")
+        if saved_contract != resume_contract:
+            mismatches = [
+                key for key, expected in resume_contract.items()
+                if not isinstance(saved_contract, dict) or saved_contract.get(key) != expected
+            ]
+            raise RuntimeError(
+                f"sequential resume contract does not match runtime: {mismatches}"
+            )
+        top_contract = resume_state_dict.get("resume_contract")
+        if top_contract is not None and top_contract != resume_contract:
+            raise RuntimeError("sequential resume top-level contract does not match runtime")
+        shard_cursor = rank_state.get("shard_idx")
+        token_cursor = rank_state.get("token_off")
+        if not isinstance(shard_cursor, int) or not 0 <= shard_cursor < len(shard_entries):
+            raise RuntimeError(
+                f"sequential resume shard cursor {shard_cursor!r} is outside the dataset"
+            )
+        if shard_cursor % world_size != rank:
+            raise RuntimeError(
+                f"sequential resume shard cursor {shard_cursor} is not owned by rank {rank}"
+            )
+        if not isinstance(token_cursor, int) or not 0 <= token_cursor < entry_tokens[shard_cursor]:
+            raise RuntimeError(
+                f"sequential resume token cursor {token_cursor!r} is outside shard "
+                f"length {entry_tokens[shard_cursor]}"
+            )
+        expected_identity = {
+            "manifest_shard_index": shard_entries[shard_cursor]["shard_index"],
+            "filename": ordered_filenames[shard_cursor],
+        }
+        saved_identity = rank_state.get("identity")
+        if not isinstance(saved_identity, dict) or any(
+            saved_identity.get(key) != value for key, value in expected_identity.items()
+        ):
+            raise RuntimeError(
+                "sequential resume cursor does not match its exact saved shard identity"
+            )
+    else:
+        shard_cursor = owned[0]
+        token_cursor = 0
+
+    token_buffer = deque()
+    use_cuda = str(device).startswith("cuda")
     segments: deque = deque()  # each item: [position, offset, remaining]
 
     def _normalize(pos, off):
@@ -328,8 +480,18 @@ def cached_distributed_data_loader_with_state(
         # re-read on resume, never skipped).
         c_pos, c_off = _consumed_state()
         c_entry = shard_entries[c_pos]
+        rank_identity = {
+            "manifest_shard_index": c_entry["shard_index"],
+            "filename": c_entry.get("filename") or f"shard_{c_entry['shard_index']:05d}.bin",
+        }
         state = {
-            "per_rank": {str(rank): {"shard_idx": c_pos, "token_off": c_off}},
+            "resume_contract": resume_contract,
+            "per_rank": {str(rank): {
+                "shard_idx": c_pos,
+                "token_off": c_off,
+                "identity": rank_identity,
+                "resume_contract": resume_contract,
+            }},
             # Also include the legacy keys for backwards compat with older checkpoints.
             "shard_idx": c_pos,
             "token_off": c_off,
@@ -339,8 +501,7 @@ def cached_distributed_data_loader_with_state(
             # produced false "provenance sane" evidence.
             "identity": {
                 "ordering_position": c_pos,
-                "manifest_shard_index": c_entry["shard_index"],
-                "filename": c_entry.get("filename") or f"shard_{c_entry['shard_index']:05d}.bin",
+                **rank_identity,
                 "token_off": c_off,
             },
         }
@@ -427,14 +588,27 @@ def _load_family_shard_lists(cache_dir: str) -> dict[str, list[dict]]:
     by_family: dict[str, list[dict]] = {}
     seen_indices: set[int] = set()
 
-    def _family_from_source_file(source_file: str) -> str | None:
-        name = source_file.split("/")[-1]
-        if name.startswith("shard_"):
-            name = name[6:]
-        for f in KNOWN_FAMILIES:
-            if name.startswith(f + "_"):
-                return f
-        return None
+    def _family_and_source_from_source_file(
+        source_file: str,
+    ) -> tuple[str | None, str | None]:
+        if not isinstance(source_file, str) or not source_file:
+            return None, None
+        stem = Path(source_file).stem
+        if stem.startswith("shard_"):
+            stem = stem[6:]
+        suffix = stem.rsplit("_", 1)
+        if len(suffix) == 2 and len(suffix[1]) == 6 and suffix[1].isdigit():
+            stem = suffix[0]
+        for family in KNOWN_FAMILIES:
+            prefix = family + "_"
+            if stem.startswith(prefix):
+                return family, stem[len(prefix):]
+        return None, None
+
+    expected_total_tokens = 0
+    expected_total_docs = 0
+    expected_per_source_tokens: dict[str, int] = {}
+    expected_per_family_tokens: dict[str, int] = {}
 
     for rec in per_shard:
         if not isinstance(rec, dict):
@@ -458,17 +632,54 @@ def _load_family_shard_lists(cache_dir: str) -> dict[str, list[dict]]:
             raise RuntimeError(
                 f"parallel_family_cache: shard_index={sidx} has unknown family {fam_provenance!r}"
             )
-        fam_from_source = _family_from_source_file(mentry.get("source_file", ""))
+        source_file = mentry.get("source_file", "")
+        fam_from_source, source_id = _family_and_source_from_source_file(source_file)
         if fam_from_source is None:
             raise RuntimeError(
                 f"parallel_family_cache: cannot derive a known family from source_file "
-                f"for shard_index={sidx}: {mentry.get('source_file')!r}"
+                f"for shard_index={sidx}: {source_file!r}"
             )
         if fam_from_source != fam_provenance:
             raise RuntimeError(
                 f"parallel_family_cache: shard_index={sidx} provenance family "
                 f"{fam_provenance!r} disagrees with source_file family {fam_from_source!r}"
             )
+        for count_name in ("docs", "tokens"):
+            manifest_count = mentry.get(count_name)
+            provenance_count = rec.get(count_name)
+            if (
+                not isinstance(manifest_count, int)
+                or isinstance(manifest_count, bool)
+                or manifest_count < 0
+            ):
+                raise RuntimeError(
+                    f"parallel_family_cache: manifest shard_index={sidx} requires a "
+                    f"non-negative integer {count_name} count"
+                )
+            if (
+                not isinstance(provenance_count, int)
+                or isinstance(provenance_count, bool)
+                or provenance_count != manifest_count
+            ):
+                raise RuntimeError(
+                    f"parallel_family_cache: shard_index={sidx} {count_name} count "
+                    f"differs: manifest={manifest_count!r}, "
+                    f"provenance={provenance_count!r}"
+                )
+        if rec.get("source_id") != source_id:
+            raise RuntimeError(
+                f"parallel_family_cache: shard_index={sidx} source_id differs: "
+                f"manifest-derived={source_id!r}, provenance={rec.get('source_id')!r}"
+            )
+        shard_tokens = mentry["tokens"]
+        expected_total_tokens += shard_tokens
+        expected_total_docs += mentry["docs"]
+        expected_per_source_tokens[source_id] = (
+            expected_per_source_tokens.get(source_id, 0) + shard_tokens
+        )
+        expected_per_family_tokens[fam_from_source] = (
+            expected_per_family_tokens.get(fam_from_source, 0) + shard_tokens
+        )
         by_family.setdefault(fam_provenance, []).append(mentry)
 
     manifest_indices = set(manifest_by_idx)
@@ -478,6 +689,35 @@ def _load_family_shard_lists(cache_dir: str) -> dict[str, list[dict]]:
             f"parallel_family_cache: provenance is missing {len(missing_indices)} manifest "
             f"shards, including {sorted(missing_indices)[:5]}; regenerate provenance"
         )
+    manifest_aggregates = {
+        "total_tokens": manifest.get("total_tokens"),
+        "total_docs": manifest.get("total_docs"),
+    }
+    derived_aggregates = {
+        "total_tokens": expected_total_tokens,
+        "total_docs": expected_total_docs,
+    }
+    if manifest_aggregates != derived_aggregates:
+        raise RuntimeError(
+            "parallel_family_cache: manifest aggregate counts do not equal its "
+            f"per-shard counts: manifest={manifest_aggregates!r}, "
+            f"derived={derived_aggregates!r}"
+        )
+    expected_summary = {
+        **derived_aggregates,
+        "per_source_tokens": expected_per_source_tokens,
+        "per_family_tokens": expected_per_family_tokens,
+        "per_family_share": {
+            family: (tokens / expected_total_tokens if expected_total_tokens else 0)
+            for family, tokens in expected_per_family_tokens.items()
+        },
+    }
+    for field, expected in expected_summary.items():
+        if split_info.get(field) != expected:
+            raise RuntimeError(
+                f"parallel_family_cache: provenance {field} does not match manifest "
+                f"counts: expected={expected!r}, got={split_info.get(field)!r}"
+            )
     # Stabilize ordering by shard_index for reproducibility
     for fam in by_family:
         by_family[fam].sort(key=lambda e: e["shard_index"])
@@ -493,6 +733,7 @@ def cached_family_balanced_data_loader_with_state(
     grad_accum_steps: int = 32,
     family_schedule: list[tuple[str, int]] = None,
     resume_state_dict: dict = None,
+    strict_manifest_schema: bool = False,
 ):
     """Family-balanced cached dataloader.
 
@@ -522,7 +763,9 @@ def cached_family_balanced_data_loader_with_state(
             "For DDP, families would need per-rank striping."
         )
 
-    manifest = _load_manifest(cache_dir)
+    manifest = _load_manifest(
+        cache_dir, require_vocab_size=strict_manifest_schema
+    )
     dtype = _dtype_from_str(manifest["dtype"], manifest["byte_order"])
     manifest_path = os.path.join(cache_dir, "cache_manifest.json")
     with open(manifest_path, "rb") as manifest_file:
@@ -541,10 +784,13 @@ def cached_family_balanced_data_loader_with_state(
     assert len(schedule_flat) == grad_accum_steps
 
     # Resume or init per-family cursors
-    resume = resume_state_dict or {}
+    resume_supplied = resume_state_dict is not None
+    if resume_supplied and not isinstance(resume_state_dict, dict):
+        raise RuntimeError("family resume state must be an object")
+    resume = resume_state_dict if resume_supplied else {}
     expected_schedule = [[fam, count] for fam, count in family_schedule]
     expected_families = {fam for fam, _count in family_schedule}
-    if resume:
+    if resume_supplied:
         if resume.get("loader_strategy") != "parallel_family_cache":
             raise RuntimeError(
                 "resume loader_strategy does not match parallel_family_cache"
@@ -582,15 +828,31 @@ def cached_family_balanced_data_loader_with_state(
             raise RuntimeError(
                 "resume microbatch_index must be an integer within grad_accum_steps"
             )
+        for fam in expected_families:
+            family_cursor = resume["family_cursors"][fam]
+            if family_cursor >= len(family_shards[fam]):
+                raise RuntimeError(
+                    f"resume family cursor for {fam}={family_cursor} is outside "
+                    f"{len(family_shards[fam])} shards"
+                )
+            selected_shard = family_shards[fam][family_cursor]
+            shard_tokens = selected_shard["tokens"]
+            token_cursor = resume["family_token_cursors"][fam]
+            if token_cursor >= shard_tokens:
+                raise RuntimeError(
+                    f"resume token cursor for {fam}={token_cursor} is outside "
+                    f"selected shard length {shard_tokens}; shard boundaries use "
+                    "the canonical next-shard, offset-zero representation"
+                )
     family_cursors: dict[str, int] = {fam: 0 for fam, _ in family_schedule}
     family_token_cursors: dict[str, int] = {fam: 0 for fam, _ in family_schedule}
     family_wrap_counts: dict[str, int] = {fam: 0 for fam, _ in family_schedule}
     microbatch_index = 0
-    if resume:
+    if resume_supplied:
         family_cursors.update(resume.get("family_cursors", {}))
         family_token_cursors.update(resume.get("family_token_cursors", {}))
         family_wrap_counts.update(resume.get("family_wrap_counts", {}))
-        microbatch_index = resume.get("microbatch_index", 0) % grad_accum_steps
+        microbatch_index = resume["microbatch_index"]
 
     needed = B * T + 1
     use_cuda = str(device).startswith("cuda")
@@ -617,7 +879,7 @@ def cached_family_balanced_data_loader_with_state(
         the cursor. Spans shard boundaries if needed. Deterministic."""
         out: list[int] = []
         while len(out) < n:
-            local_idx = family_cursors[fam] % len(family_shards[fam])
+            local_idx = family_cursors[fam]
             mm = _get_memmap(fam, local_idx)
             total = int(mm.shape[0])
             token_off = family_token_cursors[fam]

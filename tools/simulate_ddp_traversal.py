@@ -24,6 +24,7 @@ Exit code 0 = all gates pass. Usage:
         --cache-dir .../token_cache_v4_balanced_candidate/train \
         --val-cache-dir .../token_cache_v4_balanced_candidate/val \
         --world-size 8 --device-batch 32 --seq-len 2048 \
+        --run-id governed-d26-attempt-1 \
         --out runs/tier1_report.json --canary-out runs/canaries.json
 """
 from __future__ import annotations
@@ -141,7 +142,19 @@ def run(argv=None):
                     help="yields to verify after each resume test point")
     ap.add_argument("--out", default=None)
     ap.add_argument("--canary-out", default=None)
+    ap.add_argument(
+        "--run-id",
+        default=None,
+        help="required non-empty runtime/model identity when --canary-out is used",
+    )
     args = ap.parse_args(argv)
+    if args.canary_out and (
+        not isinstance(args.run_id, str) or not args.run_id.strip()
+    ):
+        raise SystemExit(
+            "GATE FAIL: --canary-out requires a non-empty --run-id so the durable "
+            "canary artifact is bound to its intended run"
+        )
 
     cache_dir = os.path.abspath(os.path.expanduser(args.cache_dir))
     W = args.world_size
@@ -316,7 +329,7 @@ def run(argv=None):
     if args.canary_out:
         os.makedirs(os.path.dirname(os.path.abspath(args.canary_out)) or ".", exist_ok=True)
         with open(args.canary_out, "w") as f:
-            json.dump({"ordering_sha256": doc["order_sha256"], "needed_per_yield": needed,
+            json.dump({"run_id": args.run_id, "ordering_sha256": doc["order_sha256"], "needed_per_yield": needed,
                        "world_size": W, "grad_accum": args.grad_accum,
                        "canaries": canaries}, f, indent=1)
 

@@ -35,6 +35,7 @@ def write_family_cache(root: Path, shard_count: int = 5) -> Path:
     train.mkdir(parents=True)
     shards = []
     per_shard = []
+    per_family = Counter()
     for index in range(shard_count):
         family = KNOWN_FAMILIES[index % len(KNOWN_FAMILIES)]
         filename = f"shard_{index:05d}.bin"
@@ -44,10 +45,18 @@ def write_family_cache(root: Path, shard_count: int = 5) -> Path:
             "shard_index": index,
             "filename": filename,
             "source_file": f"/source/shard_{family}_source_{index:06d}.parquet",
+            "docs": 1,
             "tokens": len(values),
             "bytes": values.nbytes,
         })
-        per_shard.append({"shard_index": index, "family": family})
+        per_shard.append({
+            "shard_index": index,
+            "source_id": "source",
+            "family": family,
+            "docs": 1,
+            "tokens": len(values),
+        })
+        per_family[family] += len(values)
 
     manifest_path = train / "cache_manifest.json"
     # format_version/byte_order are required by the 2026-08-13 artifact-contract
@@ -58,6 +67,8 @@ def write_family_cache(root: Path, shard_count: int = 5) -> Path:
         "byte_order": "little",
         "vocab_size": 32768,
         "dtype": "uint16",
+        "total_docs": shard_count,
+        "total_tokens": shard_count * 64,
         "shards": shards,
     }))
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -65,6 +76,14 @@ def write_family_cache(root: Path, shard_count: int = 5) -> Path:
         "splits": {
             "train": {
                 "manifest_sha256": manifest_sha,
+                "total_tokens": shard_count * 64,
+                "total_docs": shard_count,
+                "per_source_tokens": {"source": shard_count * 64},
+                "per_family_tokens": dict(per_family),
+                "per_family_share": {
+                    family: tokens / (shard_count * 64)
+                    for family, tokens in per_family.items()
+                },
                 "per_shard": per_shard,
             }
         }
@@ -87,12 +106,9 @@ def test_duplicate_provenance_cannot_satisfy_coverage(tmp_path):
     provenance = json.loads(provenance_path.read_text())
     # Nineteen records over a 20-shard manifest passes the old 95% row-count
     # gate even though only five unique shards are represented.
+    original = provenance["splits"]["train"]["per_shard"]
     provenance["splits"]["train"]["per_shard"] = [
-        {
-            "shard_index": index % 5,
-            "family": KNOWN_FAMILIES[index % 5],
-        }
-        for index in range(19)
+        dict(original[index % 5]) for index in range(19)
     ]
     provenance_path.write_text(json.dumps(provenance))
 
@@ -180,6 +196,7 @@ def _write_family_contract(root: Path, count: int = 20) -> Path:
     train.mkdir(parents=True)
     shards = []
     per_shard = []
+    per_family = Counter()
     for index in range(count):
         family = KNOWN_FAMILIES[index % len(KNOWN_FAMILIES)]
         filename = f"shard_{index:05d}.bin"
@@ -189,15 +206,25 @@ def _write_family_contract(root: Path, count: int = 20) -> Path:
             "shard_index": index,
             "filename": filename,
             "source_file": f"/source/shard_{family}_source_{index:06d}.parquet",
+            "docs": 1,
             "tokens": len(values),
             "bytes": values.nbytes,
         })
-        per_shard.append({"shard_index": index, "family": family})
+        per_shard.append({
+            "shard_index": index,
+            "source_id": "source",
+            "family": family,
+            "docs": 1,
+            "tokens": len(values),
+        })
+        per_family[family] += len(values)
     manifest_path = train / "cache_manifest.json"
     manifest_path.write_text(json.dumps({
         "format_version": 1,
         "byte_order": "little",
         "dtype": "uint16",
+        "total_docs": count,
+        "total_tokens": count * 64,
         "shards": shards,
     }))
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -205,6 +232,14 @@ def _write_family_contract(root: Path, count: int = 20) -> Path:
         "splits": {
             "train": {
                 "manifest_sha256": manifest_sha,
+                "total_tokens": count * 64,
+                "total_docs": count,
+                "per_source_tokens": {"source": count * 64},
+                "per_family_tokens": dict(per_family),
+                "per_family_share": {
+                    family: tokens / (count * 64)
+                    for family, tokens in per_family.items()
+                },
                 "per_shard": per_shard,
             }
         }

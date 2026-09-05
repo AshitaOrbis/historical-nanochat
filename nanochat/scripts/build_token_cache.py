@@ -58,6 +58,46 @@ def pick_dtype(vocab_size: int):
     return np.dtype("<u2") if vocab_size < 65536 else np.dtype("<u4")
 
 
+def resolve_input_shards(input_dir: Path) -> list:
+    """
+    Resolve the ordered list of parquet shards to tokenize from input_dir.
+
+    If input_dir holds a manifest.json (written by
+    data/process/shard_packager.py), that manifest is the source of truth for
+    which shards belong to the current corpus. A shard_*.parquet file on disk
+    but absent from the manifest is an obsolete leftover from a prior
+    packaging run into this same directory and must not be silently tokenized
+    into the cache alongside the current corpus; a manifest-listed shard
+    missing from disk means the corpus is incompletely materialized. Both
+    raise SystemExit rather than proceeding on a partial/contaminated shard
+    set. Directories with no manifest.json fall back to plain glob discovery.
+    """
+    on_disk = sorted(p for p in input_dir.glob("*.parquet"))
+    packager_manifest_path = input_dir / "manifest.json"
+    if not packager_manifest_path.exists():
+        return on_disk
+    with packager_manifest_path.open(encoding="utf-8") as manifest_file:
+        packager_manifest = json.load(manifest_file)
+    manifest_names = sorted(
+        shard["filename"] for shard in packager_manifest.get("shards", [])
+    )
+    on_disk_names = [p.name for p in on_disk]
+    missing = [name for name in manifest_names if name not in on_disk_names]
+    if missing:
+        raise SystemExit(
+            f"{packager_manifest_path} lists shard(s) missing from {input_dir}: {missing}"
+        )
+    unexpected = [name for name in on_disk_names if name not in manifest_names]
+    if unexpected:
+        raise SystemExit(
+            f"{input_dir} has parquet file(s) not listed in {packager_manifest_path}: "
+            f"{unexpected}. These look like obsolete shards left behind by a prior "
+            "packaging run into this same directory; repackage with --replace or remove "
+            "the stale files before building a token cache from this data."
+        )
+    return [input_dir / name for name in manifest_names]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input-dir", required=True, help="Directory of parquet shards")
@@ -69,7 +109,7 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     input_dir = Path(args.input_dir)
-    shards = sorted(p for p in input_dir.glob("*.parquet"))
+    shards = resolve_input_shards(input_dir)
     if not shards:
         raise SystemExit(f"No parquet shards in {args.input_dir}")
     if args.max_shards:

@@ -23,6 +23,9 @@ from typing import List, Dict, Set, Tuple, Optional
 from dataclasses import dataclass, field
 
 
+CHECKER_VERSION = "3.0.0"
+
+
 @dataclass
 class ContaminationResult:
     """Result of contamination check."""
@@ -37,50 +40,71 @@ class ContaminationResult:
 # ============================================================================
 # ANACHRONISM DETECTION CONFIGURATION
 # ============================================================================
-# Terms are grouped by the year AFTER which they become valid.
-# For a cutoff of 1913 we include all year-buckets >= 1913.
+# Terms are grouped by their earliest valid year. A term is anachronistic when
+# that year is later than the requested cutoff. Keeping actual first-valid-year
+# semantics prevents a later cutoff (notably 1950) from disabling genuinely
+# later concepts merely because they once lived in a coarse "1913" bucket.
 # ============================================================================
 
 ANACHRONISM_DEFINITE = {
-    1913: {
+    1914: {
         "world war i", "world war 1", "wwi", "first world war",
-        "world war ii", "world war 2", "wwii", "second world war",
-        "the great war",
-        # "hitler" as a surname is effectively post-1889 pre-Nazi (Adolf's father),
-        # but in English-language prose the single-word "Hitler" reference is
-        # overwhelmingly the Nazi leader. Keeping it here as a definite signal
-        # so "Hitler invaded Poland in 1939" fires without needing year triangulation.
-        "hitler", "stalin",
-        "adolf hitler", "nazi", "nazism", "gestapo", "ss troops",
+        "the great war", "world war",
+    },
+    1919: {
         "benito mussolini", "fascism", "fascist",
-        "third reich", "fuhrer", "führer",
+    },
+    1920: {
+        "hitler", "stalin", "adolf hitler", "nazi", "nazism",
+        "radio broadcast", "broadcast station",
+    },
+    1925: {
+        "ss troops", "quantum mechanics", "quantum physics",
+    },
+    1933: {
+        "gestapo", "third reich", "fuhrer", "führer",
+        "concentration camp", "death camp",
+    },
+    1939: {
+        "world war ii", "world war 2", "wwii", "second world war",
         "holocaust", "auschwitz", "concentration camp", "death camp",
-        "genocide",
         "pearl harbor", "d-day", "hiroshima", "nagasaki",
         "blitzkrieg", "luftwaffe",
-        "cold war", "iron curtain", "soviet union", "ussr",
-        "korean war", "vietnam war",
-        "cuban missile crisis", "bay of pigs",
-        "moon landing", "apollo 11", "apollo mission", "nasa",
-        "sputnik", "cosmonaut", "astronaut",
-        "atomic bomb", "nuclear weapon", "hydrogen bomb", "nuclear reactor",
-        "television broadcast", "tv broadcast", "radio broadcast", "broadcast station",
-        "computer program", "software", "internet", "website", "email",
-        "smartphone", "cell phone", "mobile phone",
     },
-    1900: {
+    1942: {"nuclear reactor"},
+    1944: {"genocide"},
+    1945: {"atomic bomb", "nuclear weapon"},
+    1947: {"cold war", "iron curtain"},
+    1950: {"korean war"},
+    1952: {"hydrogen bomb"},
+    1953: {"software"},
+    1955: {"vietnam war"},
+    1957: {"sputnik", "cosmonaut"},
+    1958: {"nasa"},
+    1959: {"astronaut"},
+    1961: {"apollo mission", "bay of pigs"},
+    1962: {"cuban missile crisis"},
+    1969: {"moon landing", "apollo 11", "internet"},
+    1971: {"email"},
+    1973: {"cell phone", "mobile phone"},
+    1990: {"website"},
+    1994: {"smartphone"},
+    1917: {"soviet union", "ussr"},
+    1903: {
         "wright brothers", "kitty hawk",
         "airplane flight", "aeroplane flight",
-        "theory of relativity", "special relativity", "general relativity",
-        "quantum mechanics", "quantum physics",
-        "world war", "wwi", "wwii",
-    },
-    1850: {
-        "telephone call", "electric light bulb", "light bulb",
-        "internal combustion engine",
         "airplane", "aeroplane", "aircraft",
-        "origin of species", "natural selection", "darwinism",
     },
+    1905: {
+        "theory of relativity", "special relativity", "general relativity",
+    },
+    1876: {"telephone call"},
+    1879: {"electric light bulb", "light bulb"},
+    1860: {"internal combustion engine", "darwinism"},
+    1858: {"natural selection"},
+    1859: {"origin of species"},
+    1928: {"television broadcast", "tv broadcast"},
+    1946: {"computer program"},
 }
 
 # Context-dependent terms: require at least one nearby context word to fire.
@@ -91,29 +115,41 @@ ANACHRONISM_DEFINITE = {
 # specifically post-cutoff in usage, so a single contextual hit crossing the 0.3
 # threshold is a strong signal rather than a false positive.
 #
-# Dead-code note: 'hitler' and 'stalin' also appear in ANACHRONISM_DEFINITE[1913]
+# Dead-code note: 'hitler' and 'stalin' also appear in ANACHRONISM_DEFINITE[1920]
 # above, so the definite pass will fire before the contextual pass ever sees them.
 # The contextual entries below for those names are kept for clarity only.
 ANACHRONISM_CONTEXTUAL = {
-    1913: {
+    1920: {
         "stalin": ["joseph", "soviet", "purge", "gulag"],  # covered by definite; kept for documentation
         "hitler": ["adolf", "nazi", "reich", "fuhrer"],     # covered by definite
+        # Removed "station", "wireless" from radio context words: Marconi/Hertz had
+        # pre-1913 wireless stations. Keep only clearly post-cutoff terms.
+        "radio": ["broadcast station", "radio program", "radio channel"],
+    },
+    1940: {
         "churchill": ["prime minister", "world war", "britain at war"],
+    },
+    1946: {
         "computer": ["electronic", "digital", "software", "program code"],  # 'machine' was too generic
+    },
+    1928: {
         "television": ["broadcast", "tv channel", "tv screen", "tv program"],
+    },
+    1945: {
         # Removed "energy", "reactor", "power plant" from atomic/nuclear context words:
         # "atomic energy" is legit pre-1913 scientific discourse (bond energies).
         # The definite-list entry "atomic bomb" and "nuclear reactor" still catches
         # explicit post-1913 phrases.
         "atomic": ["bomb", "weapon", "fission"],
         "nuclear": ["bomb", "weapon", "fission", "warhead"],
-        "soviet": ["union", "ussr", "politburo", "kremlin"],  # 'russia' was too generic
-        # Removed "station", "wireless" from radio context words: Marconi/Hertz had
-        # pre-1913 wireless stations. Keep only clearly post-cutoff terms.
-        "radio": ["broadcast station", "radio program", "radio channel"],
     },
-    1900: {
+    1917: {
+        "soviet": ["union", "ussr", "politburo", "kremlin"],  # 'russia' was too generic
+    },
+    1896: {
         "radioactiv": ["curie", "uranium", "radium", "decay"],
+    },
+    1895: {
         "x-ray": ["roentgen", "medical", "photograph"],
     },
 }
@@ -141,7 +177,7 @@ def get_definite_anachronisms(cutoff_year: int) -> Set[str]:
     """High-confidence anachronistic phrases for a given cutoff year."""
     terms: Set[str] = set()
     for year, year_terms in ANACHRONISM_DEFINITE.items():
-        if year >= cutoff_year:
+        if year > cutoff_year:
             for term in year_terms:
                 if term:
                     terms.add(term.lower())
@@ -152,7 +188,7 @@ def get_contextual_anachronisms(cutoff_year: int) -> Dict[str, List[str]]:
     """Context-dependent anachronistic terms for a given cutoff year."""
     terms: Dict[str, List[str]] = {}
     for year, year_terms in ANACHRONISM_CONTEXTUAL.items():
-        if year >= cutoff_year:
+        if year > cutoff_year:
             for term, contexts in year_terms.items():
                 terms[term.lower()] = [c.lower() for c in contexts]
     return terms
@@ -188,28 +224,25 @@ def check_for_modern_references(text: str, cutoff_year: int) -> List[str]:
     text_lower = text.lower()
     found: List[str] = []
 
-    year_pattern = r'\b(19[2-9]\d|20[0-2]\d)\b'
+    year_pattern = r'\b(1\d{3}|20\d{2})\b'
     post_cutoff_years: Set[int] = set()
     for match in re.finditer(year_pattern, text):
         year = int(match.group(1))
-        if year > cutoff_year + 10:
+        if year > cutoff_year:
             idx = match.start()
             before = text[max(0, idx - 30):idx].lower()
-            after = text[idx:min(len(text), idx + 30)].lower()
+            after = text[match.end():min(len(text), match.end() + 30)].lower()
             if re.search(r'[£$]\s*$', before):
                 continue
             if re.search(r'(?:no|vol|pp?|mss?|egerton|ms)\.*\s*$', before):
                 continue
-            if re.search(r'\d[,.]$', before) or re.search(r'^[,.\d]', after):
-                continue
-            if re.search(r'\(\s*$', before) and re.search(r'^\d{4}\s*\)', text[idx:idx + 10]):
+            if re.search(r'\d[,.]$', before) or re.search(r'^(?:\d|[,.]\d)', after):
                 continue
             post_cutoff_years.add(year)
 
     if post_cutoff_years:
-        if len(post_cutoff_years) >= 2 or any(y > cutoff_year + 50 for y in post_cutoff_years):
-            examples = sorted(post_cutoff_years)[:3]
-            found.append(f"Post-cutoff years: {examples}")
+        examples = sorted(post_cutoff_years)[:3]
+        found.append(f"Post-cutoff years: {examples}")
 
     if re.search(r'https?://', text_lower):
         found.append("URL found (https/http)")

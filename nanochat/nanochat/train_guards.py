@@ -7,6 +7,15 @@ from __future__ import annotations
 import json
 
 
+class CanaryRecords(dict):
+    """Validated canaries plus an explicit PASS/NOT_RUN startup disposition."""
+
+    def __init__(self, *args, status: str = "PASS", reason: str | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.status = status
+        self.reason = reason
+
+
 def parse_steps_list(spec: str | None) -> set[int]:
     """'954,1907, 3815' -> {954, 1907, 3815}. Empty/None -> empty set."""
     if not spec:
@@ -24,7 +33,9 @@ def parse_steps_list(spec: str | None) -> set[int]:
 
 
 def load_canaries(path: str, *, needed: int, world_size: int, grad_accum: int,
-                  ordering_sha256: str | None) -> dict[tuple[int, int], dict]:
+                  ordering_sha256: str | None,
+                  run_id: str | None = None,
+                  allow_legacy_missing_run_id: bool = False) -> CanaryRecords:
     """Load and validate a canary file; return {(after_yield, rank): canary}.
 
     Refuses on any config mismatch — a canary set generated for a different
@@ -32,8 +43,28 @@ def load_canaries(path: str, *, needed: int, world_size: int, grad_accum: int,
     also what makes the DBS-16 OOM fallback a *new attempt*: the DBS-32 canary
     file fails the `needed` check instead of silently mis-asserting (P1-4).
     """
-    with open(path) as f:
-        doc = json.load(f)
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"canary gate NOT_RUN: required canary file is absent: {path}"
+        ) from exc
+    if run_id is not None:
+        stored_run_id = doc.get("run_id")
+        if not isinstance(stored_run_id, str) or not stored_run_id:
+            reason = (
+                f"canary file {path}: run_id is missing; the gate cannot bind this "
+                "legacy file to the active run"
+            )
+            if allow_legacy_missing_run_id:
+                return CanaryRecords(status="NOT_RUN", reason=reason)
+            raise RuntimeError(reason)
+        if stored_run_id != run_id:
+            raise RuntimeError(
+                f"canary file {path}: run_id={stored_run_id!r} does not match "
+                f"runtime run_id={run_id!r}"
+            )
     if doc.get("needed_per_yield") != needed:
         raise RuntimeError(
             f"canary file {path}: needed_per_yield={doc.get('needed_per_yield')} "
@@ -45,9 +76,19 @@ def load_canaries(path: str, *, needed: int, world_size: int, grad_accum: int,
     if doc.get("grad_accum") != grad_accum:
         raise RuntimeError(
             f"canary file {path}: grad_accum={doc.get('grad_accum')} != runtime {grad_accum}")
-    if ordering_sha256 is not None and doc.get("ordering_sha256") != ordering_sha256:
+    stored_ordering_sha256 = doc.get("ordering_sha256")
+    if not isinstance(ordering_sha256, str) or not ordering_sha256:
         raise RuntimeError(
-            f"canary file {path}: ordering_sha256 {str(doc.get('ordering_sha256'))[:16]}… "
+            f"canary file {path}: runtime ordering identity is missing; "
+            "the canary gate was NOT_RUN"
+        )
+    if not isinstance(stored_ordering_sha256, str) or not stored_ordering_sha256:
+        raise RuntimeError(
+            f"canary file {path}: ordering_sha256 is missing; the canary gate was NOT_RUN"
+        )
+    if stored_ordering_sha256 != ordering_sha256:
+        raise RuntimeError(
+            f"canary file {path}: ordering_sha256 {stored_ordering_sha256[:16]}… "
             f"does not match the loaded shard ordering {ordering_sha256[:16]}… — "
             "stale canaries would assert the wrong traversal.")
     canaries = doc.get("canaries") or []
@@ -94,7 +135,18 @@ def load_canaries(path: str, *, needed: int, world_size: int, grad_accum: int,
                 f"canary file {path}: after_yield={after_yield} is missing "
                 f"rank records {sorted(missing)}"
             )
-    return by_yield_rank
+    return CanaryRecords(by_yield_rank)
+
+
+def require_future_canary(canary_yields: set[int], consumed_yields: int) -> int:
+    """Require a resume to retain at least one executable canary boundary."""
+    pending = sum(1 for after_yield in canary_yields if after_yield > consumed_yields)
+    if pending == 0:
+        raise RuntimeError(
+            f"resume at consumed_yields={consumed_yields} has no future canary; "
+            "the traversal gate would be NOT_RUN"
+        )
+    return pending
 
 
 def check_canary(canary: dict, state: dict, rank: int) -> str | None:
@@ -122,8 +174,31 @@ def check_canary(canary: dict, state: dict, rank: int) -> str | None:
     return "; ".join(mismatches) or None
 
 
+_REQUIRED_EXPECTED_PATHS = (
+    "model.n_layer", "model.n_embd", "model.n_head", "model.n_kv_head",
+    "model.vocab_size", "model.num_params", "model.max_seq_len",
+    "optimizer.dmodel_lr_scale", "optimizer.adamw_groups_initial_lr",
+    "optimizer.adamw_betas", "optimizer.adamw_weight_decay",
+    "optimizer.muon_groups_initial_lr", "optimizer.batch_lr_scale",
+    "schedule.num_iterations", "schedule.total_batch_size",
+    "schedule.device_batch_size", "schedule.grad_accum_steps",
+    "schedule.warmup_ratio", "schedule.warmdown_ratio",
+    "schedule.final_lr_frac", "tokenizer.vocab_size", "tokenizer.bos_id",
+    "tokenizer.sha256_tokenizer_pkl", "tokenizer.sha256_token_bytes_npy",
+    "data.ordering_order_sha256", "data.ordering_file_sha256",
+    "runtime.device_type",
+)
+_REQUIRED_EXPECTED_SHA256_PATHS = (
+    "tokenizer.sha256_tokenizer_pkl",
+    "tokenizer.sha256_token_bytes_npy",
+    "data.ordering_order_sha256",
+    "data.ordering_file_sha256",
+)
+
+
 def assert_expected_resolved(expected: dict, resolved: dict,
-                             float_rtol: float = 1e-6) -> list[str]:
+                             float_rtol: float = 1e-6,
+                             require_full_schema: bool = False) -> list[str]:
     """Compare a nested expected-config dict against runtime-resolved values.
     Returns the list of checked paths; raises AssertionError listing EVERY
     mismatch (not just the first) so a bad launch surfaces completely.
@@ -132,6 +207,37 @@ def assert_expected_resolved(expected: dict, resolved: dict,
     """
     failures: list[str] = []
     checked: list[str] = []
+
+    if require_full_schema:
+        missing_required = []
+        for dotted_path in _REQUIRED_EXPECTED_PATHS:
+            current = expected
+            for key in dotted_path.split("."):
+                if not isinstance(current, dict) or key not in current:
+                    missing_required.append(dotted_path)
+                    break
+                current = current[key]
+        if missing_required:
+            raise RuntimeError(
+                "expected-config schema is missing required fields: "
+                + ", ".join(missing_required)
+            )
+        invalid_identity = []
+        for dotted_path in _REQUIRED_EXPECTED_SHA256_PATHS:
+            value = expected
+            for key in dotted_path.split("."):
+                value = value[key]
+            if not (
+                isinstance(value, str)
+                and len(value) == 64
+                and all(character in "0123456789abcdef" for character in value.lower())
+            ):
+                invalid_identity.append(dotted_path)
+        if invalid_identity:
+            raise RuntimeError(
+                "expected-config identity SHA-256 fields must be non-empty "
+                "64-character hexadecimal strings: " + ", ".join(invalid_identity)
+            )
 
     def close(a, b) -> bool:
         if isinstance(a, float) or isinstance(b, float):
@@ -170,4 +276,9 @@ def assert_expected_resolved(expected: dict, resolved: dict,
     if failures:
         raise AssertionError(
             "resolved-config assertions FAILED:\n  " + "\n  ".join(failures))
+    if not checked:
+        raise RuntimeError(
+            "resolved-config gate checked zero leaves; empty/comment-only expectations "
+            "are NOT_RUN, never success"
+        )
     return checked

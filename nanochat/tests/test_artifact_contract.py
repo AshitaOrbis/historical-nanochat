@@ -123,11 +123,103 @@ def test_tokenizer_artifact_contract_fails_closed(tmp_path, mutation):
         guard.validate_tokenizer_artifacts(tmp_path, tokenizer, token_bytes)
 
 
+def test_stale_pickle_alongside_json_manifest_is_rejected(tmp_path):
+    """bq-1941: a manifest can declare tokenizer_json while a stale tokenizer.pkl
+    with the same vocab_size/BOS but a DIFFERENT mapping sits at the canonical
+    path. get_tokenizer() prefers the pickle unconditionally, so validation must
+    refuse this bundle rather than certify the (unloaded) JSON file's hash."""
+    guard = _guard_module()
+    assert guard is not None, "nanochat.artifact_guard is missing"
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir(parents=True)
+
+    # The manifest attests THIS json file...
+    json_path = tokenizer_dir / "tokenizer.json"
+    json_path.write_bytes(b"trusted-json-mapping")
+    # ...but a stale pickle with a DIFFERENT mapping also exists at the canonical
+    # path that get_tokenizer() actually reads first.
+    (tokenizer_dir / "tokenizer.pkl").write_bytes(b"stale-different-mapping")
+
+    values = np.arange(8, dtype=np.int32)
+    values[-1] = 0
+    token_bytes_path = tokenizer_dir / "token_bytes.npy"
+    np.save(token_bytes_path, values, allow_pickle=False)
+
+    manifest = {
+        "tokenizer": {
+            "format": "test",
+            "vocab_size": 8,
+            "special_tokens": {"<|bos|>": 7},
+        },
+        "outputs": {
+            "tokenizer_json": "tokenizer/tokenizer.json",
+            "sha256_tokenizer_json": hashlib.sha256(json_path.read_bytes()).hexdigest(),
+            "token_bytes_npy": "tokenizer/token_bytes.npy",
+            "sha256_token_bytes_npy": hashlib.sha256(token_bytes_path.read_bytes()).hexdigest(),
+        },
+    }
+    (tokenizer_dir / "tokenizer_manifest.json").write_text(json.dumps(manifest))
+
+    # Same vocab_size/BOS as the manifest declares -- only the mapping differs,
+    # which is exactly what the pre-fix guard could not detect.
+    with pytest.raises(RuntimeError, match="stale tokenizer.pkl"):
+        guard.validate_tokenizer_artifacts(
+            tmp_path, FakeTokenizer(vocab_size=8, bos_id=7), torch.from_numpy(values.copy())
+        )
+
+
+def test_alternate_byte_table_path_is_rejected(tmp_path):
+    """bq-1941: a manifest can point token_bytes_npy at a non-canonical path.
+    get_token_bytes() always reads the canonical tokenizer/token_bytes.npy, so a
+    same-shape/same-dtype table at another path is never what gets loaded and
+    must not be certified."""
+    guard = _guard_module()
+    assert guard is not None, "nanochat.artifact_guard is missing"
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir(parents=True)
+
+    tokenizer_path = tokenizer_dir / "tokenizer.pkl"
+    tokenizer_path.write_bytes(b"trusted-tokenizer-fixture")
+
+    # The manifest attests an ALTERNATE byte table...
+    alt_values = np.arange(8, dtype=np.int32)
+    alt_values[-1] = 0
+    alt_path = tokenizer_dir / "token_bytes_alt.npy"
+    np.save(alt_path, alt_values, allow_pickle=False)
+
+    # ...but a DIFFERENT table with the same shape/dtype sits at the canonical
+    # path that get_token_bytes() actually reads.
+    canonical_values = np.arange(8, dtype=np.int32) + 100
+    canonical_values[-1] = 0
+    np.save(tokenizer_dir / "token_bytes.npy", canonical_values, allow_pickle=False)
+
+    manifest = {
+        "tokenizer": {
+            "format": "test",
+            "vocab_size": 8,
+            "special_tokens": {"<|bos|>": 7},
+        },
+        "outputs": {
+            "tokenizer_pkl": "tokenizer/tokenizer.pkl",
+            "sha256_tokenizer_pkl": hashlib.sha256(tokenizer_path.read_bytes()).hexdigest(),
+            "token_bytes_npy": "tokenizer/token_bytes_alt.npy",
+            "sha256_token_bytes_npy": hashlib.sha256(alt_path.read_bytes()).hexdigest(),
+        },
+    }
+    (tokenizer_dir / "tokenizer_manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(RuntimeError, match="canonical loader path"):
+        guard.validate_tokenizer_artifacts(
+            tmp_path, FakeTokenizer(vocab_size=8, bos_id=7), torch.from_numpy(alt_values.copy())
+        )
+
+
 def test_checkpoint_and_cache_identity_are_mandatory(tmp_path):
     guard = _guard_module()
     assert guard is not None, "nanochat.artifact_guard is missing"
     identity = {
-        "contract_version": 1,
+        "contract_version": 2,
+        "build_config_sha256": "c" * 64,
         "tokenizer_sha256": "a" * 64,
         "token_bytes_sha256": "b" * 64,
         "vocab_size": 8,

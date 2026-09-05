@@ -238,6 +238,51 @@ def check_roundtrip(checkpoint_dir: Path, step: int, device: str) -> CheckResult
         )
 
 
+def check_strict_model_load(checkpoint_dir: Path, step: int, device: str) -> CheckResult:
+    """Construct GPT(GPTConfig(**model_config)) from the checkpoint's own declared
+    config and require load_state_dict(strict=True) to succeed against it.
+
+    This is the check the module docstring promises ("Model state dict loads
+    without missing/unexpected keys under strict=True") and that
+    check_roundtrip() above does NOT perform: a serialization round-trip only
+    proves a dict comes back out exactly as it went in, even if that dict is
+    empty or contains nothing resembling model weights. Restorability requires
+    actually building the model and loading into it.
+    """
+    name = "strict model_state_dict load against GPTConfig"
+    try:
+        import torch
+
+        from nanochat.checkpoint_manager import load_checkpoint  # type: ignore
+        from nanochat.gpt import GPT, GPTConfig  # type: ignore
+
+        model_data, _, meta_data = load_checkpoint(
+            str(checkpoint_dir), step, torch.device(device), load_optimizer=False
+        )
+        model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
+        model_config_kwargs = meta_data.get("model_config")
+        if not isinstance(model_config_kwargs, dict):
+            return CheckResult(
+                name=name, passed=False,
+                detail="checkpoint metadata is missing required model_config",
+            )
+        config = GPTConfig(**model_config_kwargs)
+        model = GPT(config)
+        model.load_state_dict(model_data, strict=True)
+        return CheckResult(
+            name=name,
+            passed=True,
+            detail=(
+                f"GPT(**{model_config_kwargs}) accepted {len(model_data)} tensor(s) "
+                "under strict=True"
+            ),
+        )
+    except Exception as e:
+        # Fail closed: any exception (missing keys, unexpected keys, shape
+        # mismatch, bad config) is a FAIL, never a silent PASS.
+        return CheckResult(name=name, passed=False, detail=f"exception: {type(e).__name__}: {e}")
+
+
 def parse_log_trajectory(log_path: Path) -> dict[str, Any]:
     """Parse loss per step and val BPB per eval step from the training log."""
     losses: list[tuple[int, float]] = []
@@ -459,7 +504,7 @@ def main():
     ap.add_argument(
         "--skip-roundtrip",
         action="store_true",
-        help="Skip state_dict round-trip (no torch import required)",
+        help="Skip state_dict round-trip AND the strict GPTConfig load (no torch import required)",
     )
     ap.add_argument("--report-dir", default=str(REPO_ROOT / "report"))
     args = ap.parse_args()
@@ -476,13 +521,22 @@ def main():
     meta_res, _ = check_meta_json(checkpoint_dir, args.step)
     report.checks.append(meta_res)
 
-    # 3-4: round-trip load/save
+    # 3-4: round-trip load/save + strict model-state-dict load
     if not args.skip_roundtrip and meta_res.passed:
         report.checks.append(check_roundtrip(checkpoint_dir, args.step, args.device))
+        report.checks.append(check_strict_model_load(checkpoint_dir, args.step, args.device))
     else:
         report.checks.append(
             CheckResult(
                 name="state_dict round-trip (save -> load -> hash)",
+                passed=False,
+                warn=True,
+                detail="skipped (flag or meta invalid)",
+            )
+        )
+        report.checks.append(
+            CheckResult(
+                name="strict model_state_dict load against GPTConfig",
                 passed=False,
                 warn=True,
                 detail="skipped (flag or meta invalid)",

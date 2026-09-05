@@ -27,14 +27,8 @@ from tqdm import tqdm
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-try:
-    from data.process.contamination_check import (
-        check_contamination,
-        clean_gutenberg_headers,
-    )
-except ImportError:
-    check_contamination = None
-    clean_gutenberg_headers = None
+from data.process import contamination_check as contamination_checker
+from data.process.contamination_check import check_contamination, clean_gutenberg_headers
 
 
 # Default sampling rates for balanced corpus.
@@ -47,6 +41,8 @@ DEFAULT_SAMPLE_RATES = {
     'eebo': 1.0,               # Keep all 1.6B
     'tcp': 1.0,                # Keep all 0.25B
     'oldbailey': 1.0,          # Keep all 0.11B
+    'chronicling_america': 1.0,
+    'caselaw': 1.0,
     'default': 1.0,            # Keep unknown sources
 }
 
@@ -55,12 +51,40 @@ DEFAULT_SAMPLE_RATES = {
 # Oldbailey is intentionally excluded: it's court transcripts with short Q/A lines that
 # would fail the short-line heuristic. Gutenberg is also excluded because Project Gutenberg
 # texts are hand-corrected, not OCR (and include poetry/plays with short lines).
-OCR_HEAVY_SOURCES = {"american_stories", "bhl", "bl_newspapers", "chronicling", "eebo", "tcp"}
+OCR_HEAVY_SOURCES = {
+    "american_stories", "bhl", "bl_newspapers", "chronicling_america", "eebo", "tcp"
+}
 
 # Sources where prose structure is atypical (verse, transcripts, reference works) and
 # the default OCR-quality thresholds would false-positive. These bypass the OCR filter
 # entirely; rely on length + contamination + dedup for gating instead.
-OCR_FILTER_BYPASS = {"oldbailey", "gutenberg"}
+OCR_FILTER_BYPASS = {"oldbailey", "gutenberg", "caselaw"}
+
+SOURCE_ALIASES = {
+    "chronicling": "chronicling_america",
+    "chronicling-america": "chronicling_america",
+    "chronicling america": "chronicling_america",
+}
+
+
+def normalize_source_name(source: object) -> str:
+    """Normalize known aliases; preserve unknown names so they fail safe."""
+    normalized = str(source or "unknown").strip().lower()
+    return SOURCE_ALIASES.get(normalized, normalized)
+
+
+def contamination_checker_identity() -> Dict[str, str]:
+    """Return the exact implementation identity used for an attested run."""
+    if not callable(check_contamination):
+        raise RuntimeError("requested contamination checker is unavailable")
+    module_path = Path(contamination_checker.__file__ or "")
+    if not module_path.is_file():
+        raise RuntimeError("contamination checker module file is unavailable")
+    return {
+        "module": contamination_checker.__name__,
+        "version": str(getattr(contamination_checker, "CHECKER_VERSION", "unknown")),
+        "sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
+    }
 
 
 def ocr_quality_ok(
@@ -154,8 +178,7 @@ def iter_jsonl_texts_streaming(
     Memory efficient - processes one line at a time. Yields source label
     so downstream code can track per-source stats.
 
-    If `run_contamination` is True (and cutoff_year set and the checker is
-    importable) contaminated docs are dropped. Gutenberg records get header
+    If `run_contamination` is True, contaminated docs are dropped. Gutenberg records get header
     cleanup inline so headers don't look like contamination.
 
     If `rejection_report` dict is passed, per-file counts (accepted, sampling,
@@ -189,6 +212,7 @@ def iter_jsonl_texts_streaming(
             "rejected_sampling": 0,
             "rejected_length": 0,
             "rejected_contamination": 0,
+            "contamination_examined": 0,
             "rejected_ocr_quality": 0,
             "rejected_duplicate": 0,
             "json_errors": 0,
@@ -216,10 +240,10 @@ def iter_jsonl_texts_streaming(
                     continue
 
                 text = record.get('text', '')
-                record_source = record.get('source', source)
+                record_source = normalize_source_name(record.get('source', source))
 
                 # Gutenberg headers/footers look like contamination, so strip them first.
-                if record_source == 'gutenberg' and clean_gutenberg_headers is not None:
+                if record_source == 'gutenberg':
                     text = clean_gutenberg_headers(text)
 
                 if not text or len(text) < min_length:
@@ -228,14 +252,15 @@ def iter_jsonl_texts_streaming(
 
                 # Cheap quality gate for OCR-heavy sources (runs before contamination).
                 # Bypass sources that have atypical prose structure (transcripts, verse).
-                if (run_ocr_quality
-                        and record_source in OCR_HEAVY_SOURCES
-                        and record_source not in OCR_FILTER_BYPASS):
+                # Known exemptions are explicit. Every other source, including an
+                # unknown label, runs the gate rather than silently bypassing it.
+                if run_ocr_quality and record_source not in OCR_FILTER_BYPASS:
                     if not ocr_quality_ok(text):
                         counts["rejected_ocr_quality"] += 1
                         continue
 
-                if run_contamination and check_contamination is not None and cutoff_year is not None:
+                if run_contamination:
+                    counts["contamination_examined"] += 1
                     result = check_contamination(text, cutoff_year)
                     if result.is_contaminated:
                         counts["rejected_contamination"] += 1
@@ -265,6 +290,19 @@ def iter_jsonl_texts_streaming(
             per_file.append(counts)
 
 
+# Filenames this module itself writes into an output directory. Used both to
+# detect a pre-existing packager-owned output and (under --replace) to know
+# exactly what is safe to remove -- never anything else in that directory.
+PACKAGER_OWNED_GLOBS = ("shard_*.parquet", "manifest.json", "stats.json")
+
+
+def _packager_owned_files(output_dir: Path) -> List[Path]:
+    found: List[Path] = []
+    for pattern in PACKAGER_OWNED_GLOBS:
+        found.extend(sorted(output_dir.glob(pattern)))
+    return found
+
+
 def package_shards_streaming(
     input_files: List[str],
     output_dir: str,
@@ -279,6 +317,7 @@ def package_shards_streaming(
     run_contamination: bool = False,
     run_ocr_quality: bool = True,
     run_dedup: bool = True,
+    replace_existing: bool = False,
 ) -> dict:
     """
     Package texts into parquet shards using a bounded shuffle buffer.
@@ -289,8 +328,47 @@ def package_shards_streaming(
       - per-source totals across all shards
       - sample_rates used and seed
       - contamination rejection counts (when enabled)
+
+    Refuses to run into an output_dir that already holds packager-owned files
+    (shard_*.parquet, manifest.json, stats.json) unless replace_existing=True,
+    since restarting shard numbering at zero in an existing directory leaves
+    old higher-numbered shards on disk that manifest-blind consumers (glob-based
+    dataset loaders) would still discover and train/validate on. When
+    replace_existing=True, only those packager-owned filenames are removed
+    before writing the new output -- nothing else in the directory is touched.
     """
+    if not input_files:
+        raise ValueError("at least one input file is required")
+    for filepath in input_files:
+        path = Path(filepath)
+        if not path.is_file():
+            raise FileNotFoundError(f"input corpus file is missing or unreadable: {filepath}")
+    checker = None
+    if run_contamination:
+        if cutoff_year is None:
+            raise ValueError("cutoff_year is required when contamination checking is enabled")
+        checker = contamination_checker_identity()
+
+    output_path = Path(output_dir)
+    existing = _packager_owned_files(output_path) if output_path.exists() else []
+    if existing and not replace_existing:
+        names = ", ".join(p.name for p in existing[:10])
+        more = "" if len(existing) <= 10 else f" (+{len(existing) - 10} more)"
+        raise FileExistsError(
+            f"{output_dir} already contains packager output ({names}{more}). "
+            "Repackaging into an existing output directory leaves obsolete shards "
+            "discoverable by manifest-blind consumers. Pass replace_existing=True "
+            "(CLI: --replace) to remove exactly the prior packager-owned files "
+            "first, or choose a fresh/staging output directory."
+        )
+    if existing and replace_existing:
+        for stale_path in existing:
+            stale_path.unlink()
+
     os.makedirs(output_dir, exist_ok=True)
+    # None means "caller supplied nothing" -> apply the balanced defaults.
+    # An explicit {} (or any dict) means the caller made a real choice (e.g. the
+    # CLI's --no-sample identity map) and must be honored as-is, not overridden.
     if sample_rates is None:
         sample_rates = DEFAULT_SAMPLE_RATES
 
@@ -326,6 +404,13 @@ def package_shards_streaming(
             "sample_rates": sample_rates,
             "cutoff_year": cutoff_year,
             "contamination_enabled": run_contamination,
+            "contamination_status": "CHECKED" if run_contamination else "UNCHECKED",
+            "ocr_quality_status": "CHECKED" if run_ocr_quality else "UNCHECKED",
+        },
+        "contamination_control": {
+            "status": "CHECKED" if run_contamination else "UNCHECKED",
+            "checker": checker,
+            "records_examined": 0,
         },
     }
 
@@ -343,6 +428,18 @@ def package_shards_streaming(
             return
         shard_path = os.path.join(output_dir, f"shard_{shard_index:05d}.parquet")
         shard_table = pa.Table.from_pydict({"text": shard_docs})
+        shard_examined = len(shard_docs) if run_contamination else 0
+        if run_contamination and shard_examined < len(shard_docs):
+            raise RuntimeError("refusing a checked shard with incomplete examination")
+        shard_table = shard_table.replace_schema_metadata({
+            b"contamination_status": (
+                b"CHECKED" if run_contamination else b"UNCHECKED"
+            ),
+            b"contamination_records_examined": str(shard_examined).encode("ascii"),
+            b"contamination_checker": json.dumps(
+                checker, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8"),
+        })
         pq.write_table(
             shard_table, shard_path,
             row_group_size=min(row_group_size, len(shard_docs)),
@@ -361,6 +458,9 @@ def package_shards_streaming(
             "docs": len(shard_docs),
             "chars": shard_chars,
             "source_distribution": dist,
+            "contamination_status": "CHECKED" if run_contamination else "UNCHECKED",
+            "contamination_records_examined": shard_examined,
+            "contamination_checker": checker,
         })
         stats["num_shards"] += 1
         print(f"  Wrote shard {shard_index}: {len(shard_docs):,} docs, {shard_chars:,} chars")
@@ -425,6 +525,18 @@ def package_shards_streaming(
             if isinstance(val, int):
                 totals[key] = totals.get(key, 0) + val
     stats["rejections"]["totals"] = totals
+    examined = totals.get("contamination_examined", 0)
+    stats["contamination_control"]["records_examined"] = examined
+
+    if stats["total_docs"] == 0 or stats["num_shards"] == 0:
+        raise RuntimeError(
+            "packaging produced no records or shards; refusing success attestation"
+        )
+    if run_contamination and examined < stats["total_docs"]:
+        raise RuntimeError(
+            "contamination attestation invariant failed: fewer records were examined "
+            "than packaged"
+        )
 
     manifest_path = os.path.join(output_dir, "manifest.json")
     with open(manifest_path, 'w') as f:
@@ -540,6 +652,12 @@ Examples:
                         help="Disable OCR-quality pre-filter for OCR-heavy sources.")
     parser.add_argument("--no-dedup", action="store_true",
                         help="Disable near-dedup via content fingerprint.")
+    parser.add_argument("--replace", action="store_true",
+                        help="Remove a prior packager output (shard_*.parquet, manifest.json, "
+                             "stats.json) from --output-dir before writing. Without this flag, "
+                             "packaging into a directory that already holds packager output "
+                             "is refused, since restarted shard numbering would otherwise leave "
+                             "obsolete shards discoverable by manifest-blind consumers.")
     args = parser.parse_args()
 
     if args.data_dir:
@@ -556,7 +674,9 @@ Examples:
     stats = package_shards_streaming(
         input_files=input_files,
         output_dir=args.output_dir,
-        sample_rates=None if args.no_sample else DEFAULT_SAMPLE_RATES,
+        # An explicit identity map (not None) so package_shards_streaming's
+        # "caller supplied nothing" substitution never re-applies DEFAULT_SAMPLE_RATES.
+        sample_rates={} if args.no_sample else DEFAULT_SAMPLE_RATES,
         chars_per_shard=args.chars_per_shard,
         seed=args.seed,
         max_shards=args.max_shards,
@@ -566,6 +686,7 @@ Examples:
         run_contamination=args.check_contamination,
         run_ocr_quality=not args.no_ocr_quality,
         run_dedup=not args.no_dedup,
+        replace_existing=args.replace,
     )
 
     estimates = estimate_training_capacity(stats)

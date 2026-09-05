@@ -64,21 +64,41 @@ def build_provenance(cache_root) -> dict:
                 raise ValueError(
                     f"{manifest_path}: shard {shard_index} requires integer tokens"
                 )
+            docs = entry.get("docs")
+            if (
+                not isinstance(docs, int)
+                or isinstance(docs, bool)
+                or docs < 0
+            ):
+                raise ValueError(
+                    f"{manifest_path}: shard {shard_index} requires non-negative "
+                    "integer docs"
+                )
             per_source[source_id] += tokens
             per_family[family] += tokens
             per_shard.append({
                 "shard_index": shard_index,
                 "source_id": source_id,
                 "family": family,
-                "docs": entry.get("docs"),
+                "docs": docs,
                 "tokens": tokens,
             })
         total_tokens = sum(per_family.values())
+        total_docs = sum(entry["docs"] for entry in per_shard)
+        for aggregate_name, derived_value in (
+            ("total_tokens", total_tokens),
+            ("total_docs", total_docs),
+        ):
+            if manifest.get(aggregate_name) != derived_value:
+                raise ValueError(
+                    f"{manifest_path}: {aggregate_name}={manifest.get(aggregate_name)!r} "
+                    f"does not match per-shard total {derived_value}"
+                )
         document["splits"][split] = {
             "manifest": str(manifest_path),
             "manifest_sha256": sha256_file(manifest_path),
             "total_tokens": total_tokens,
-            "total_docs": manifest.get("total_docs", 0),
+            "total_docs": total_docs,
             "per_source_tokens": dict(per_source),
             "per_family_tokens": dict(per_family),
             "per_family_share": {

@@ -10,12 +10,20 @@ import torch
 
 from nanochat.common import get_base_dir
 from nanochat.gpt import GPT, GPTConfig
-from nanochat.tokenizer import get_tokenizer
+from nanochat.tokenizer import get_token_bytes, get_tokenizer
+from nanochat.artifact_guard import (
+    IDENTITY_KEYS,
+    validate_identity_binding,
+    validate_tokenizer_artifacts,
+)
 from nanochat.common import setup_default_logging
 
 # Set up logging
 setup_default_logging()
 logger = logging.getLogger(__name__)
+_ACTIVE_ARTIFACT_IDENTITY = None
+
+
 def log0(message):
     if int(os.environ.get('RANK', 0)) == 0:
         logger.info(message)
@@ -50,6 +58,33 @@ def _write_complete_sentinel(checkpoint_dir, step, world_size, has_optimizer):
 
 
 def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
+    global _ACTIVE_ARTIFACT_IDENTITY
+    meta_data = dict(meta_data)
+    # Utility-only sentinel tests may omit model_config. Every real model
+    # checkpoint must either declare a complete identity (base training) or
+    # inherit the identity validated by the central parent-model load path
+    # (mid/SFT/RL phase transitions).
+    if "model_config" in meta_data:
+        candidate_identity = meta_data.get("artifact_identity")
+        if _ACTIVE_ARTIFACT_IDENTITY is not None:
+            if candidate_identity is None:
+                meta_data["artifact_identity"] = dict(_ACTIVE_ARTIFACT_IDENTITY)
+            else:
+                validate_identity_binding(
+                    "checkpoint being written",
+                    candidate_identity,
+                    _ACTIVE_ARTIFACT_IDENTITY,
+                )
+        else:
+            if not isinstance(candidate_identity, dict):
+                raise RuntimeError(
+                    "checkpoint metadata is missing required tokenizer artifact identity"
+                )
+            missing = [key for key in IDENTITY_KEYS if key not in candidate_identity]
+            if missing:
+                raise RuntimeError(
+                    f"checkpoint tokenizer identity is missing fields: {missing}"
+                )
     if rank == 0:
         os.makedirs(checkpoint_dir, exist_ok=True)
         # Save the model state parameters
@@ -94,7 +129,37 @@ def save_bf16_snapshot(checkpoint_dir, step, model_state):
     return path
 
 
+def _validate_loaded_checkpoint_identity(meta_data):
+    """Bind every direct checkpoint consumer to the validated tokenizer bundle."""
+    global _ACTIVE_ARTIFACT_IDENTITY
+    tokenizer = get_tokenizer()
+    token_bytes = get_token_bytes(device="cpu")
+    runtime_identity = validate_tokenizer_artifacts(
+        get_base_dir(), tokenizer, token_bytes
+    )
+    validate_identity_binding(
+        "checkpoint", meta_data.get("artifact_identity"), runtime_identity
+    )
+    model_config = meta_data.get("model_config")
+    if not isinstance(model_config, dict):
+        raise RuntimeError("checkpoint metadata is missing required model_config")
+    model_vocab_size = model_config.get("vocab_size")
+    if model_vocab_size != runtime_identity["vocab_size"]:
+        raise RuntimeError(
+            f"checkpoint model_config.vocab_size={model_vocab_size!r} does not match "
+            f"validated tokenizer vocab_size={runtime_identity['vocab_size']}"
+        )
+    _ACTIVE_ARTIFACT_IDENTITY = dict(runtime_identity)
+    return runtime_identity
+
+
 def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
+    # Load and validate metadata first. A missing/mismatched identity aborts
+    # before checkpoint tensors are deserialized or exposed to any caller.
+    meta_path = os.path.join(checkpoint_dir, f"meta_{step:06d}.json")
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta_data = json.load(f)
+    _validate_loaded_checkpoint_identity(meta_data)
     # Load the model state
     model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
     model_data = torch.load(model_path, map_location=device)
@@ -103,10 +168,6 @@ def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):
     if load_optimizer:
         optimizer_path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
         optimizer_data = torch.load(optimizer_path, map_location=device)
-    # Load the metadata
-    meta_path = os.path.join(checkpoint_dir, f"meta_{step:06d}.json")
-    with open(meta_path, "r", encoding="utf-8") as f:
-        meta_data = json.load(f)
     return model_data, optimizer_data, meta_data
 
 
@@ -118,9 +179,12 @@ def build_model(checkpoint_dir, step, device, phase):
     - tokenizer
     - meta data saved during base model training
     """
-    assert phase in ["train", "eval"], f"Invalid phase: {phase}"
+    global _ACTIVE_ARTIFACT_IDENTITY
+    if phase not in ("train", "eval"):
+        raise ValueError(f"Invalid phase: {phase}")
     model_data, optimizer_data, meta_data = load_checkpoint(checkpoint_dir, step, device, load_optimizer=False)
-    if device.type in {"cpu", "mps"}:
+    device_type = device.type if hasattr(device, "type") else str(device).split(":", 1)[0]
+    if device_type in {"cpu", "mps"}:
         # Convert bfloat16 tensors to float for CPU inference
         model_data = {
             k: v.float() if v.dtype == torch.bfloat16 else v
@@ -130,6 +194,25 @@ def build_model(checkpoint_dir, step, device, phase):
     model_data = {k.removeprefix("_orig_mod."): v for k, v in model_data.items()}
     model_config_kwargs = meta_data["model_config"]
     log0(f"Building model with config: {model_config_kwargs}")
+
+    # The checkpoint/tokenizer join is centralized here so inference, evaluation,
+    # and every downstream training phase receive the same mandatory gate.
+    tokenizer = get_tokenizer()
+    token_bytes = get_token_bytes(device="cpu")
+    runtime_identity = validate_tokenizer_artifacts(
+        get_base_dir(), tokenizer, token_bytes
+    )
+    validate_identity_binding(
+        "checkpoint", meta_data.get("artifact_identity"), runtime_identity
+    )
+    runtime_vocab_size = tokenizer.get_vocab_size()
+    if runtime_vocab_size != model_config_kwargs["vocab_size"]:
+        raise RuntimeError(
+            f"checkpoint model vocab_size={model_config_kwargs['vocab_size']} does not "
+            f"match validated tokenizer vocab_size={runtime_vocab_size}"
+        )
+    _ACTIVE_ARTIFACT_IDENTITY = dict(runtime_identity)
+
     model_config = GPTConfig(**model_config_kwargs)
     with torch.device("meta"):
         model = GPT(model_config)
@@ -142,10 +225,6 @@ def build_model(checkpoint_dir, step, device, phase):
         model.eval()
     else:
         model.train()
-    # Load the Tokenizer
-    tokenizer = get_tokenizer()
-    # Sanity check: compatibility between model and tokenizer
-    assert tokenizer.get_vocab_size() == model_config_kwargs["vocab_size"]
     return model, tokenizer, meta_data
 
 
@@ -196,7 +275,8 @@ def load_model_from_dir(checkpoints_dir, device, phase, model_tag=None, step=Non
     if step is None:
         # guess the step by defaulting to the last step
         step = find_last_step(checkpoint_dir)
-    assert step is not None, f"No checkpoints found in {checkpoint_dir}"
+    if step is None:
+        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
     # build the model
     log0(f"Loading model from {checkpoint_dir} with step {step}")
     model, tokenizer, meta_data = build_model(checkpoint_dir, step, device, phase)

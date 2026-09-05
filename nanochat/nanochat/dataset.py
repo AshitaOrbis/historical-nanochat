@@ -18,6 +18,7 @@ mirror the legacy `base_data/` wrapper directory.
 
 import os
 import argparse
+import json
 import time
 import requests
 import pyarrow.parquet as pq
@@ -62,12 +63,48 @@ DATA_DIR = get_parquet_dir()
 # These functions are useful utilities to other modules, can/should be imported
 
 def list_parquet_files(data_dir=None):
-    """ Looks into a data dir and returns full paths to all parquet files. """
+    """
+    Looks into a data dir and returns full paths to all parquet files.
+
+    If the directory holds a manifest.json (written by
+    data/process/shard_packager.py), that manifest is the source of truth:
+    only the shards it lists are returned. A shard_*.parquet file present on
+    disk but absent from the manifest is an obsolete leftover from a prior
+    packaging run into the same directory (e.g. after repackaging restarted
+    shard numbering at zero) and must not be silently discovered and trained
+    or validated on -- this raises instead. A shard the manifest lists but
+    that is missing from disk also raises rather than training on a partial,
+    misreported corpus. Directories with no manifest.json (e.g. the legacy
+    FineWeb base_data/ layout) fall back to plain directory discovery.
+    """
     data_dir = get_parquet_dir(explicit=data_dir)
-    parquet_files = sorted([
+    on_disk = sorted(
         f for f in os.listdir(data_dir)
         if f.endswith('.parquet') and not f.endswith('.tmp')
-    ])
+    )
+    manifest_path = os.path.join(data_dir, "manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path, encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+        manifest_files = sorted(
+            shard["filename"] for shard in manifest.get("shards", [])
+        )
+        missing = [f for f in manifest_files if f not in on_disk]
+        if missing:
+            raise FileNotFoundError(
+                f"{manifest_path} lists shard(s) missing from {data_dir}: {missing}"
+            )
+        unexpected = [f for f in on_disk if f not in manifest_files]
+        if unexpected:
+            raise RuntimeError(
+                f"{data_dir} has parquet file(s) not listed in {manifest_path}: "
+                f"{unexpected}. These look like obsolete shards left behind by a "
+                "prior packaging run into this same directory; repackage with "
+                "--replace or remove the stale files before training on this data."
+            )
+        parquet_files = manifest_files
+    else:
+        parquet_files = on_disk
     parquet_paths = [os.path.join(data_dir, f) for f in parquet_files]
     return parquet_paths
 

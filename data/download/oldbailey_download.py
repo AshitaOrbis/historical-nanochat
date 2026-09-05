@@ -1,9 +1,10 @@
 """
-Download Old Bailey Proceedings corpus for historical nanochat training.
+Process a locally acquired Old Bailey Proceedings corpus for nanochat training.
 
 The Old Bailey Corpus contains trial proceedings from 1674-1913.
 All content is pre-WWI by definition.
-Download from CLARIN-D or process from Old Bailey Online XML.
+The corpus must be downloaded separately from CLARIN-D; this entry point never
+pretends that writing instructions constitutes acquisition.
 """
 import os
 import json
@@ -53,16 +54,14 @@ def parse_trial_date(trial_id: str) -> Optional[int]:
     return None
 
 
-def download_oldbailey_sample(
+def process_oldbailey_corpus(
+    corpus_dir: str,
     output_dir: str = "data/raw/oldbailey",
     cutoff: str = "1913",
     max_trials: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Download Old Bailey proceedings.
-
-    Note: The full corpus requires manual download from CLARIN-D.
-    This function provides a sample via the API for testing.
+    Process locally downloaded Old Bailey XML proceedings.
     """
     from data.download.gutenberg_download import CUTOFF_CONFIGS
 
@@ -70,6 +69,19 @@ def download_oldbailey_sample(
         raise ValueError(f"Unknown cutoff: {cutoff}")
 
     cutoff_year = CUTOFF_CONFIGS[cutoff]["year"]
+    corpus_path = os.path.abspath(corpus_dir)
+    if not os.path.isdir(corpus_path):
+        raise FileNotFoundError(f"Old Bailey corpus directory not found: {corpus_dir}")
+
+    xml_files = sorted(f for f in os.listdir(corpus_path) if f.endswith('.xml'))
+    if max_trials is not None:
+        xml_files = xml_files[:max_trials]
+    if not xml_files:
+        raise RuntimeError(
+            "Old Bailey acquired no records "
+            "(requested=0, fetched=0, written=0; corpus directory has no XML files)"
+        )
+
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Old Bailey Corpus (1674-1913)")
@@ -77,6 +89,9 @@ def download_oldbailey_sample(
     print(f"Cutoff year: {cutoff_year}")
 
     stats = {
+        "records_requested": len(xml_files),
+        "records_fetched": 0,
+        "records_written": 0,
         "total_processed": 0,
         "accepted": 0,
         "rejected": 0,
@@ -86,97 +101,91 @@ def download_oldbailey_sample(
 
     output_file = os.path.join(output_dir, f"oldbailey_{cutoff}.jsonl")
 
-    # Note: For full corpus, user should download from CLARIN-D
-    print("\nNOTE: For the full corpus, download from CLARIN-D:")
-    print("  https://fedora.clarin-d.uni-saarland.de/oldbailey/")
-    print("\nThis script provides guidance on processing the corpus.")
+    print(f"\nProcessing local corpus at {corpus_path}")
 
-    # Create a placeholder with instructions
-    instructions = {
-        "instructions": "Download the Old Bailey Corpus from CLARIN-D",
-        "url": CLARIN_CORPUS_URL,
-        "format": "XML files with trial transcripts",
-        "date_range": "1674-1913",
-        "total_words": "127 million words",
-        "processing_notes": [
-            "All content is pre-1913 - no date filtering needed for 1913 cutoff",
-            "For earlier cutoffs, filter by trial date in filename",
-            "Use BeautifulSoup with lxml-xml parser for extraction",
-            "Preserve speaker annotations if desired for sociolinguistic research",
-        ],
-    }
+    with open(output_file, 'w', encoding='utf-8') as f:
+        for xml_file in tqdm(xml_files, desc="Processing XML files"):
+            filepath = os.path.join(corpus_path, xml_file)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as xf:
+                    xml_content = xf.read()
+                stats["records_fetched"] += 1
 
-    instructions_file = os.path.join(output_dir, "README.json")
-    with open(instructions_file, 'w') as f:
-        json.dump(instructions, f, indent=2)
+                text = extract_text_from_xml(xml_content)
 
-    print(f"\nInstructions saved to: {instructions_file}")
-
-    # If corpus files exist locally, process them
-    corpus_dir = os.path.join(output_dir, "corpus")
-    if os.path.exists(corpus_dir):
-        print(f"\nFound local corpus at {corpus_dir}, processing...")
-
-        xml_files = [f for f in os.listdir(corpus_dir) if f.endswith('.xml')]
-
-        with open(output_file, 'w', encoding='utf-8') as f:
-            for xml_file in tqdm(xml_files, desc="Processing XML files"):
-                if max_trials and stats["accepted"] >= max_trials:
-                    break
-
-                filepath = os.path.join(corpus_dir, xml_file)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as xf:
-                        xml_content = xf.read()
-
-                    text = extract_text_from_xml(xml_content)
-
-                    if len(text) < 100:
-                        stats["rejected"] += 1
-                        continue
-
-                    # Extract year from filename
-                    year = parse_trial_date(xml_file)
-                    if year and year > cutoff_year:
-                        stats["rejected"] += 1
-                        continue
-
-                    stats["accepted"] += 1
-                    stats["total_chars"] += len(text)
-
-                    if year:
-                        decade = (year // 10) * 10
-                        stats["years_distribution"][decade] = stats["years_distribution"].get(decade, 0) + 1
-
-                    record = {
-                        "text": text,
-                        "source": "oldbailey",
-                        "filename": xml_file,
-                        "year": year,
-                    }
-                    f.write(json.dumps(record, ensure_ascii=False) + '\n')
-
-                except Exception as e:
-                    print(f"Error processing {xml_file}: {e}")
+                if len(text) < 100:
                     stats["rejected"] += 1
+                    continue
 
-                stats["total_processed"] += 1
+                year = parse_trial_date(xml_file)
+                if year and year > cutoff_year:
+                    stats["rejected"] += 1
+                    continue
 
-        # Save stats
-        stats_file = os.path.join(output_dir, f"oldbailey_{cutoff}_stats.json")
-        with open(stats_file, 'w') as f:
-            json.dump(stats, f, indent=2)
+                stats["accepted"] += 1
+                stats["records_written"] += 1
+                stats["total_chars"] += len(text)
 
-        print(f"\nResults:")
-        print(f"  Processed: {stats['total_processed']}")
-        print(f"  Accepted: {stats['accepted']}")
-        print(f"  Total chars: {stats['total_chars']:,}")
+                if year:
+                    decade = (year // 10) * 10
+                    stats["years_distribution"][decade] = stats["years_distribution"].get(decade, 0) + 1
+
+                record = {
+                    "text": text,
+                    "source": "oldbailey",
+                    "filename": xml_file,
+                    "year": year,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+            except Exception as e:
+                print(f"Error processing {xml_file}: {e}")
+                stats["rejected"] += 1
+
+            stats["total_processed"] += 1
+
+    stats_file = os.path.join(output_dir, f"oldbailey_{cutoff}_stats.json")
+    with open(stats_file, 'w') as f:
+        json.dump(stats, f, indent=2)
+
+    print(f"\nResults:")
+    print(f"  Processed: {stats['total_processed']}")
+    print(f"  Accepted: {stats['accepted']}")
+    print(f"  Total chars: {stats['total_chars']:,}")
+    print(
+        "  Acquisition counts: "
+        f"requested={stats['records_requested']} "
+        f"fetched={stats['records_fetched']} written={stats['records_written']}"
+    )
+
+    if stats["records_written"] == 0:
+        raise RuntimeError(
+            "Old Bailey acquired no records "
+            f"(requested={stats['records_requested']}, "
+            f"fetched={stats['records_fetched']}, written=0)"
+        )
 
     return stats
 
 
+def download_oldbailey_sample(
+    output_dir: str = "data/raw/oldbailey",
+    cutoff: str = "1913",
+    max_trials: Optional[int] = None,
+    corpus_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compatibility wrapper; acquisition is still explicit and local-only."""
+    if corpus_dir is None:
+        raise FileNotFoundError(
+            "--corpus-dir is required; download the Old Bailey XML corpus separately"
+        )
+    return process_oldbailey_corpus(corpus_dir, output_dir, cutoff, max_trials)
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download Old Bailey Corpus")
+    parser = argparse.ArgumentParser(description="Process a locally downloaded Old Bailey XML corpus")
+    parser.add_argument("--corpus-dir", type=str, required=True,
+                        help="Directory containing Old Bailey XML files (required)")
     parser.add_argument("--cutoff", type=str, default="1913",
                         help="Temporal cutoff year")
     parser.add_argument("--output-dir", type=str, default="data/raw/oldbailey",
@@ -186,7 +195,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    download_oldbailey_sample(
+    process_oldbailey_corpus(
+        corpus_dir=args.corpus_dir,
         output_dir=args.output_dir,
         cutoff=args.cutoff,
         max_trials=args.max_trials,
