@@ -31,6 +31,7 @@ from nanochat.dataloader_cached import (
     cached_distributed_data_loader_with_state,
     cached_family_balanced_data_loader_with_state,
     load_verified_shard_ordering,
+    rebind_sequential_resume_geometry,
 )
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
@@ -157,6 +158,18 @@ parser.add_argument("--benchmark_csv", type=str, default=None,
 parser.add_argument("--model_tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
 user_config = vars(args).copy()  # for logging
+if args.seq_len_late > 0 and args.token_cache_dir and args.loader_strategy == "parallel_family_cache":
+    # bq-2037: the family loader's resume contract binds sequence_length and
+    # grad_accum_steps and it has no geometry transition, so the curriculum's
+    # mid-run loader rebuild could only abort at the switch -- after most of the
+    # run's compute, and before that step's checkpoint. Refuse before any
+    # tokenizer, cache or device work.
+    raise RuntimeError(
+        "--seq_len_late is not supported with --loader_strategy=parallel_family_cache: "
+        "that loader's resume contract binds sequence_length and grad_accum_steps and "
+        "has no in-process geometry transition. Use --loader_strategy=sequential_cache "
+        "or train without the sequence-length curriculum."
+    )
 # -----------------------------------------------------------------------------
 
 # Compute init
@@ -489,7 +502,26 @@ def _write_abort_record(kind, payload):
 tokens_dir = os.path.join(base_dir, "tokenized_data")
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
 
-current_seq_len = args.max_seq_len
+# Seq-length curriculum: returns the T we should use at this step.
+def get_seq_len_for_step(step_idx):
+    if args.seq_len_late <= 0:
+        return args.max_seq_len
+    switch_at = int(round(num_iterations * args.seq_len_late_frac))
+    return args.seq_len_late if step_idx >= switch_at else args.max_seq_len
+
+# Start at the geometry of the step training begins on (bq-2037). A run resumed
+# past the curriculum switch saved its loader cursor under the LATE sequence
+# length; building its first loader at max_seq_len made the strict cached-loader
+# contract refuse that checkpoint before the first step.
+current_seq_len = get_seq_len_for_step(args.resume_from_step if resuming else 0)
+if current_seq_len != args.max_seq_len:
+    _start_tokens_per_fwdbwd = args.device_batch_size * current_seq_len * ddp_world_size
+    assert args.total_batch_size % _start_tokens_per_fwdbwd == 0, (
+        f"total_batch_size={args.total_batch_size} not divisible by starting per-step "
+        f"tokens={_start_tokens_per_fwdbwd}; pick a seq_len_late that divides evenly."
+    )
+    grad_accum_steps = args.total_batch_size // _start_tokens_per_fwdbwd
+    print0(f"Starting at curriculum T={current_seq_len}: grad_accum_steps={grad_accum_steps}")
 
 def build_train_loader(B, T, resume_state_dict):
     if args.token_cache_dir:
@@ -514,6 +546,12 @@ def build_train_loader(B, T, resume_state_dict):
         resume_state_dict=resume_state_dict,
         parquet_dir=args.parquet_dir,
     )
+
+def loader_state_for_geometry(state, B, T):
+    """Carry a consumed loader cursor into a new batch geometry at a curriculum switch."""
+    if state is None or not args.token_cache_dir:
+        return state  # fresh start, or a raw parquet cursor, which binds no geometry
+    return rebind_sequential_resume_geometry(state, batch_size=B, sequence_length=T)
 
 def build_val_loader_fn(B, T):
     if args.token_cache_dir:
@@ -562,12 +600,6 @@ def get_muon_momentum(it):
     momentum = (1 - frac) * 0.85 + frac * 0.95
     return momentum
 
-# Seq-length curriculum: returns the T we should use at this step.
-def get_seq_len_for_step(step_idx):
-    if args.seq_len_late <= 0:
-        return args.max_seq_len
-    switch_at = int(round(num_iterations * args.seq_len_late_frac))
-    return args.seq_len_late if step_idx >= switch_at else args.max_seq_len
 
 # -----------------------------------------------------------------------------
 # Benchmark CSV (append-only, rank 0 only). Writes a header if the file is new.
@@ -664,6 +696,14 @@ while True:
         print0(f"  new grad_accum_steps: {grad_accum_steps}")
         # Rebuild from the CONSUMED cursor: the held prefetch (x, y) was never
         # trained on, so the new loader must re-serve those tokens at the new T.
+        # The sequential cache binds batch geometry into its strict resume contract,
+        # so the cursor is carried across deliberately: same cache, order, split,
+        # world and token position, new B*T (bq-2037). The rebound state also
+        # becomes the consumed state, so a checkpoint saved at this step records
+        # the geometry that a resume from it will build.
+        consumed_loader_state = loader_state_for_geometry(
+            consumed_loader_state, args.device_batch_size, current_seq_len
+        )
         train_loader = build_train_loader(args.device_batch_size, current_seq_len, consumed_loader_state)
         build_val_loader = build_val_loader_fn(args.device_batch_size, current_seq_len)
         x, y, after_current_loader_state = next(train_loader)  # prime the new loader

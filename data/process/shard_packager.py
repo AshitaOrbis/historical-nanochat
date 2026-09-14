@@ -21,7 +21,8 @@ import json
 import argparse
 import hashlib
 import random
-from typing import Iterator, List, Optional, Dict, Tuple
+import re
+from typing import Callable, Iterator, List, Optional, Dict, Tuple
 from pathlib import Path
 from tqdm import tqdm
 import pyarrow as pa
@@ -65,6 +66,65 @@ SOURCE_ALIASES = {
     "chronicling-america": "chronicling_america",
     "chronicling america": "chronicling_america",
 }
+
+
+# Record-level date evidence that checked packaging enforces against the cutoff
+# (bq-2036), keyed by normalized source. Each entry names TOP-LEVEL record fields
+# whose value dates the text itself: a newspaper issue, a court decision, a
+# trial, or a printed item's publication year as its acquisition recorded it.
+# Nested catalogue metadata is deliberately absent: Gutenberg's `metadata` block
+# carries ebook release and cataloguing dates, so Gutenberg is trusted only
+# through the `publication_date` object its strict downloader writes. A source
+# not listed has no date evidence the packager can rely on; its records go to
+# the body checker exactly as before, and the manifest says so.
+DATE_EVIDENCE_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "gutenberg": ("publication_date.year",),
+    "chronicling_america": ("date", "year"),
+    "american_stories": ("date", "year"),
+    "bl_newspapers": ("year",),
+    "oldbailey": ("date", "year"),
+    "caselaw": ("year",),
+    "caselaw_cap_v2": ("decision_date", "year"),
+    "bhl": ("year",),
+    "blbooks": ("year",),
+    "eebo_tcp": ("year",),
+    "ecco_tcp": ("year",),
+    "evans_tcp": ("year",),
+}
+
+DATE_PROVENANCE_SIDECAR = "date_provenance.jsonl"
+
+
+def _evidence_year(value) -> Optional[int]:
+    """The four-digit year leading a date value ("1912-12-15", "17200427", 1912)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        match = re.match(r"\s*(\d{4})", value)
+        return int(match.group(1)) if match else None
+    return None
+
+
+def record_date_evidence(record: Dict, source: str) -> List[Dict]:
+    """The allow-listed date evidence one record carries, as [{field, value, year}]."""
+    evidence = []
+    for field in DATE_EVIDENCE_FIELDS.get(source, ()):
+        parent, value = None, record
+        for part in field.split("."):
+            parent = value
+            value = value.get(part) if isinstance(value, dict) else None
+        year = _evidence_year(value)
+        if year is not None:
+            item = {"field": field, "value": value, "year": year}
+            if parent is not record and isinstance(parent, dict):
+                # A structured evidence object travels whole. For the strict Gutenberg
+                # downloader's publication_date, which field or phrase justified the
+                # year is the provenance, not the year alone.
+                item["evidence_object"] = dict(parent)
+            evidence.append(item)
+    return evidence
 
 
 def normalize_source_name(source: object) -> str:
@@ -171,7 +231,9 @@ def iter_jsonl_texts_streaming(
     run_ocr_quality: bool = True,
     run_dedup: bool = True,
     seen_fingerprints: Optional[set] = None,
-) -> Iterator[Tuple[str, str]]:
+    date_evidence: bool = False,
+    date_audit: Optional[Callable[[Dict], None]] = None,
+) -> Iterator[tuple]:
     """
     Stream (text, source) tuples from JSONL files.
 
@@ -184,9 +246,16 @@ def iter_jsonl_texts_streaming(
     If `rejection_report` dict is passed, per-file counts (accepted, sampling,
     length, contamination, json_error) are appended under rejection_report['per_file'].
     Callers typically hand this to the packager to persist alongside the manifest.
+
+    With `run_contamination`, a record whose allow-listed date evidence
+    (DATE_EVIDENCE_FIELDS) is later than `cutoff_year` is rejected before any
+    text handling, and `date_audit`, if given, receives its provenance. With
+    `date_evidence=True` the iterator yields (text, source, provenance), where
+    provenance is None for a record that carried no evidence.
     """
     rng = random.Random(seed)
     per_file = rejection_report['per_file'] if rejection_report is not None else None
+    enforce_dates = run_contamination and cutoff_year is not None
     if seen_fingerprints is None and run_dedup:
         seen_fingerprints = set()
 
@@ -216,11 +285,22 @@ def iter_jsonl_texts_streaming(
             "rejected_ocr_quality": 0,
             "rejected_duplicate": 0,
             "json_errors": 0,
+            "date_evidence_present": 0,
+            "rejected_post_cutoff_date": 0,
         }
+
+        # Register the live counter object BEFORE reading (bq-2038). A token or
+        # shard cap stops consumption mid-file and abandons this generator before
+        # its EOF bookkeeping runs; a counter appended only at EOF then vanished
+        # from the aggregate, and the examined-versus-packaged invariant failed
+        # after shards were already written. Registered up front, every check
+        # this file performed reaches the totals however consumption ends.
+        if per_file is not None:
+            per_file.append(counts)
 
         pbar = tqdm(total=file_size, unit='B', unit_scale=True, desc=f"  {source}") if progress else None
         with open(filepath, 'r', encoding='utf-8') as f:
-            for line in f:
+            for line_no, line in enumerate(f, start=1):
                 if pbar:
                     pbar.update(len(line.encode('utf-8')))
 
@@ -241,6 +321,27 @@ def iter_jsonl_texts_streaming(
 
                 text = record.get('text', '')
                 record_source = normalize_source_name(record.get('source', source))
+
+                # Known-later evidence rejects before the record is reduced to text
+                # (bq-2036). The body checker cannot see a date the record states
+                # outside its text, so a 1920 publication with an innocuous body used
+                # to enter a 1913 package with its date evidence discarded.
+                provenance = None
+                if enforce_dates:
+                    evidence = record_date_evidence(record, record_source)
+                    if evidence:
+                        counts["date_evidence_present"] += 1
+                        provenance = {
+                            "input_file": filepath,
+                            "line": line_no,
+                            "source": record_source,
+                            "evidence": evidence,
+                        }
+                    if any(item["year"] > cutoff_year for item in evidence):
+                        counts["rejected_post_cutoff_date"] += 1
+                        if date_audit is not None:
+                            date_audit({"decision": "rejected_post_cutoff_date", **provenance})
+                        continue
 
                 # Gutenberg headers/footers look like contamination, so strip them first.
                 if record_source == 'gutenberg':
@@ -276,7 +377,10 @@ def iter_jsonl_texts_streaming(
                     seen_fingerprints.add(fp)
 
                 counts["accepted"] += 1
-                yield text, record_source
+                if date_evidence:
+                    yield text, record_source, provenance
+                else:
+                    yield text, record_source
 
         if pbar:
             pbar.close()
@@ -285,15 +389,14 @@ def iter_jsonl_texts_streaming(
               f"length={counts['rejected_length']:,} "
               f"ocr_quality={counts['rejected_ocr_quality']:,} "
               f"contamination={counts['rejected_contamination']:,} "
+              f"post_cutoff_date={counts['rejected_post_cutoff_date']:,} "
               f"duplicate={counts['rejected_duplicate']:,}")
-        if per_file is not None:
-            per_file.append(counts)
 
 
 # Filenames this module itself writes into an output directory. Used both to
 # detect a pre-existing packager-owned output and (under --replace) to know
 # exactly what is safe to remove -- never anything else in that directory.
-PACKAGER_OWNED_GLOBS = ("shard_*.parquet", "manifest.json", "stats.json")
+PACKAGER_OWNED_GLOBS = ("shard_*.parquet", "manifest.json", "stats.json", DATE_PROVENANCE_SIDECAR)
 
 
 def _packager_owned_files(output_dir: Path) -> List[Path]:
@@ -318,6 +421,7 @@ def package_shards_streaming(
     run_ocr_quality: bool = True,
     run_dedup: bool = True,
     replace_existing: bool = False,
+    input_selection: Optional[Dict] = None,
 ) -> dict:
     """
     Package texts into parquet shards using a bounded shuffle buffer.
@@ -412,7 +516,23 @@ def package_shards_streaming(
             "checker": checker,
             "records_examined": 0,
         },
+        # Record-level date evidence against the cutoff (bq-2036). Enforced only
+        # with the contamination check, so an UNCHECKED artifact stays exactly that.
+        "temporal_metadata_control": {
+            "status": "CHECKED" if run_contamination else "UNCHECKED",
+            "cutoff_year": cutoff_year if run_contamination else None,
+            "evidence_fields": (
+                {src: list(fields) for src, fields in DATE_EVIDENCE_FIELDS.items()}
+                if run_contamination else {}
+            ),
+            "records_with_date_evidence": 0,
+            "rejected_post_cutoff_date": 0,
+            "packaged_with_date_evidence": 0,
+            "provenance_sidecar": DATE_PROVENANCE_SIDECAR if run_contamination else None,
+        },
     }
+    if input_selection is not None:
+        stats["input_selection"] = input_selection
 
     # per-shard accumulator
     shard_docs: List[str] = []
@@ -420,7 +540,17 @@ def package_shards_streaming(
     shard_chars = 0
     shard_index = 0
     # bounded shuffle buffer
-    shuffle_buffer: List[Tuple[str, str]] = []
+    shuffle_buffer: List[Tuple[str, str, Optional[Dict]]] = []
+    # Date provenance of the docs in the shard being filled, flushed with that
+    # shard, so the sidecar names only rows that were actually written.
+    pending_date_provenance: List[Dict] = []
+    date_sidecar = (
+        open(os.path.join(output_dir, DATE_PROVENANCE_SIDECAR), "w", encoding="utf-8")
+        if run_contamination else None
+    )
+
+    def audit_date_rejection(entry: Dict) -> None:
+        date_sidecar.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def write_shard():
         nonlocal shard_docs, shard_sources, shard_chars, shard_index
@@ -463,6 +593,16 @@ def package_shards_streaming(
             "contamination_checker": checker,
         })
         stats["num_shards"] += 1
+        if date_sidecar is not None:
+            for entry in pending_date_provenance:
+                date_sidecar.write(json.dumps(
+                    {"decision": "packaged", "shard": os.path.basename(shard_path), **entry},
+                    ensure_ascii=False,
+                ) + "\n")
+            stats["temporal_metadata_control"]["packaged_with_date_evidence"] += len(
+                pending_date_provenance
+            )
+        pending_date_provenance.clear()
         print(f"  Wrote shard {shard_index}: {len(shard_docs):,} docs, {shard_chars:,} chars")
         shard_docs, shard_sources = [], []
         shard_chars = 0
@@ -484,7 +624,9 @@ def package_shards_streaming(
                 stop = True
                 break
             idx = rng.randint(0, len(shuffle_buffer) - 1)
-            text, src = shuffle_buffer.pop(idx)
+            text, src, provenance = shuffle_buffer.pop(idx)
+            if provenance is not None:
+                pending_date_provenance.append({"row": len(shard_docs), **provenance})
             shard_docs.append(text)
             shard_sources.append(src)
             shard_chars += len(text)
@@ -498,13 +640,15 @@ def package_shards_streaming(
         return stop
 
     stop_signal = False
-    for text, src in iter_jsonl_texts_streaming(
+    for text, src, provenance in iter_jsonl_texts_streaming(
         input_files, sample_rates, seed=seed,
         cutoff_year=cutoff_year, run_contamination=run_contamination,
         rejection_report=stats["rejections"],
         run_ocr_quality=run_ocr_quality, run_dedup=run_dedup,
+        date_evidence=True,
+        date_audit=audit_date_rejection if date_sidecar is not None else None,
     ):
-        shuffle_buffer.append((text, src))
+        shuffle_buffer.append((text, src, provenance))
         if len(shuffle_buffer) >= buffer_size:
             if emit_from_buffer(force_all=False):
                 stop_signal = True
@@ -517,6 +661,8 @@ def package_shards_streaming(
     # final (possibly undersized) shard
     if shard_docs and (max_shards is None or shard_index < max_shards):
         write_shard()
+    if date_sidecar is not None:
+        date_sidecar.close()
 
     # Aggregate rejection totals across per-file counters.
     totals: Dict[str, int] = {}
@@ -527,6 +673,9 @@ def package_shards_streaming(
     stats["rejections"]["totals"] = totals
     examined = totals.get("contamination_examined", 0)
     stats["contamination_control"]["records_examined"] = examined
+    temporal = stats["temporal_metadata_control"]
+    temporal["records_with_date_evidence"] = totals.get("date_evidence_present", 0)
+    temporal["rejected_post_cutoff_date"] = totals.get("rejected_post_cutoff_date", 0)
 
     if stats["total_docs"] == 0 or stats["num_shards"] == 0:
         raise RuntimeError(
@@ -608,15 +757,69 @@ def estimate_training_capacity(stats: dict) -> dict:
     return estimates
 
 
-def find_corpus_files(data_dir: str) -> List[str]:
-    """Find all JSONL corpus files in a data directory."""
+_CUTOFF_VARIANT_STEM = re.compile(r"^(?P<base>.+)_(?P<cutoff>(?:pre)?\d{4})$")
+
+
+def find_corpus_files(
+    data_dir: str,
+    cutoff_year: Optional[int] = None,
+    report: Optional[Dict] = None,
+) -> List[str]:
+    """Find the JSONL corpus files in a data directory's source subdirectories.
+
+    Acquisition scripts name their output for the cutoff they filtered to
+    (gutenberg_1913.jsonl, gutenberg_1950.jsonl). Two such variants of one
+    acquisition in one directory are not two corpora: the later one admitted
+    records the earlier cutoff excludes, and collecting both mixed them into
+    the package (bq-2036). So when a directory holds more than one cutoff
+    variant of the same acquisition, only the variant named for the requested
+    cutoff is taken; with no exact match, discovery refuses and asks for an
+    explicit --input selection. A file with no sibling variant is taken as
+    before -- per-record date evidence and the body checker still apply to it.
+    If `report` is given, the exclusions are recorded in it.
+    """
     files = []
+    excluded = []
     data_path = Path(data_dir)
     for subdir in sorted(data_path.iterdir()):
         if not subdir.is_dir() or 'test' in subdir.name:
             continue
-        for jsonl in subdir.glob("*.jsonl"):
-            files.append(str(jsonl))
+        found = list(subdir.glob("*.jsonl"))
+        variants: Dict[str, List[Tuple[str, Path]]] = {}
+        for jsonl in found:
+            match = _CUTOFF_VARIANT_STEM.match(jsonl.stem)
+            if match:
+                variants.setdefault(match.group("base"), []).append(
+                    (match.group("cutoff"), jsonl)
+                )
+        dropped = set()
+        for base, members in variants.items():
+            if len(members) < 2:
+                continue
+            wanted = [
+                path for token, path in members
+                if cutoff_year is not None and token == str(cutoff_year)
+            ]
+            if not wanted:
+                names = ", ".join(sorted(path.name for _, path in members))
+                raise ValueError(
+                    f"{subdir} holds {len(members)} cutoff variants of the '{base}' "
+                    f"acquisition ({names}) and none is named for cutoff {cutoff_year}. "
+                    "Collecting them all would mix records admitted under different "
+                    "cutoffs; select the compatible files explicitly with --input."
+                )
+            for token, path in members:
+                if path not in wanted:
+                    dropped.add(path)
+                    excluded.append({
+                        "file": str(path),
+                        "reason": f"cutoff variant '{token}' of '{base}' in a {cutoff_year} package",
+                    })
+        for jsonl in found:
+            if jsonl not in dropped:
+                files.append(str(jsonl))
+    if report is not None:
+        report["excluded_cutoff_variants"] = excluded
     return files
 
 
@@ -654,19 +857,25 @@ Examples:
                         help="Disable near-dedup via content fingerprint.")
     parser.add_argument("--replace", action="store_true",
                         help="Remove a prior packager output (shard_*.parquet, manifest.json, "
-                             "stats.json) from --output-dir before writing. Without this flag, "
+                             "stats.json, date_provenance.jsonl) from --output-dir before writing. Without this flag, "
                              "packaging into a directory that already holds packager output "
                              "is refused, since restarted shard numbering would otherwise leave "
                              "obsolete shards discoverable by manifest-blind consumers.")
     args = parser.parse_args()
 
     if args.data_dir:
-        input_files = find_corpus_files(args.data_dir)
+        input_selection = {"mode": "data_dir", "data_dir": args.data_dir}
+        input_files = find_corpus_files(
+            args.data_dir, cutoff_year=args.cutoff, report=input_selection
+        )
         print(f"Found {len(input_files)} corpus files in {args.data_dir}")
         for f in input_files:
             print(f"  - {f}")
+        for skipped in input_selection["excluded_cutoff_variants"]:
+            print(f"  (excluded {skipped['file']}: {skipped['reason']})")
     else:
         input_files = args.input
+        input_selection = {"mode": "explicit_input"}
     if not input_files:
         print("No input files found!")
         exit(1)
@@ -687,6 +896,7 @@ Examples:
         run_ocr_quality=not args.no_ocr_quality,
         run_dedup=not args.no_dedup,
         replace_existing=args.replace,
+        input_selection=input_selection,
     )
 
     estimates = estimate_training_capacity(stats)

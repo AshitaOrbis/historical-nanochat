@@ -119,7 +119,22 @@ python3 -m data.process.shard_packager \
 The output directory gets a `manifest.json` with per-shard doc/char counts and
 per-source distributions. A checked artifact records the checker module,
 version, SHA-256, and examined-record count at both manifest and shard level.
-Omitting `--check-contamination` explicitly stamps the artifact `UNCHECKED`;
+With `--check-contamination`, a record whose own date evidence is later than
+the cutoff is also rejected before its text is examined: the `publication_date`
+Gutenberg's strict downloader writes, newspaper issue dates, court decision
+dates, trial dates, and the publication years the other acquisitions record
+(`DATE_EVIDENCE_FIELDS` in the packager lists them; catalogue and ebook-release
+metadata never count). `date_provenance.jsonl` lists every packaged record that
+carried such evidence, with its shard row and the evidence itself (for Gutenberg,
+the downloader's whole `publication_date` object), and every record rejected for
+a post-cutoff date, with its input file and line; records rejected for length,
+OCR quality, body contamination or duplication are counted in the manifest but
+not listed there. The manifest's `temporal_metadata_control` records the counts. `--data-dir`
+discovery refuses a source directory holding several cutoff variants of one
+acquisition (for example `gutenberg_1913.jsonl` beside `gutenberg_1950.jsonl`)
+unless one of them is named for the requested cutoff.
+Omitting `--check-contamination` explicitly stamps the artifact `UNCHECKED`
+(neither the body check nor the date-evidence check ran);
 it cannot be represented as checked downstream. Missing inputs, an unavailable
 checker, zero examined records, or zero output shards are hard failures. Use
 `--input <files...>` instead of `--data-dir` to target specific JSONL files,

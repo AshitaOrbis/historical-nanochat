@@ -7,6 +7,40 @@ from nanochat.common import get_dist_info
 from nanochat.dataset import list_parquet_files
 from nanochat.tokenizer import get_tokenizer
 
+def _require_every_rank_owns_rows(all_parquet_paths, world_size):
+    """Refuse a raw split in which some DDP rank would never receive a document.
+
+    Row groups are dealt out by index: rank r reads groups r, r+W, r+2W, ... of
+    every file in its split. Two parquet files are enough for the train/val split
+    to exist, but not for every rank to own data in it. With one row group per
+    file and W=2, rank 1 never enters a file's row-group loop, the epoch loop
+    restarts forever, and it neither yields nor raises while its peers block in
+    the next collective (bq-2039).
+
+    Both splits are checked whichever one is being built, so a validation split
+    too small for the world size fails at startup instead of at the first
+    evaluation. Every rank is checked, not only this one, so all ranks refuse
+    together rather than one refusing while the others wait on it.
+    """
+    splits = {"train": all_parquet_paths[:-1], "val": all_parquet_paths[-1:]}
+    for split_name, paths in splits.items():
+        owners = set()
+        for path in paths:
+            metadata = pq.read_metadata(path)
+            for rg_idx in range(metadata.num_row_groups):
+                if metadata.row_group(rg_idx).num_rows > 0:
+                    owners.add(rg_idx % world_size)
+        starved = sorted(set(range(world_size)) - owners)
+        if starved:
+            raise RuntimeError(
+                f"raw loader {split_name} split gives no rows to DDP rank(s) {starved} "
+                f"of world_size={world_size}: rank r reads row groups r, r+{world_size}, "
+                "... of each file, and no file in this split has a non-empty row group "
+                "at any of those indices. Repackage with smaller row groups or more "
+                "shards, or train on fewer ranks."
+            )
+
+
 def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None, parquet_dir=None):
     """
     Stream pretraining text from parquet files, tokenize, yield training batches.
@@ -55,6 +89,7 @@ def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads
     # Resolve split cardinality before returning the generator. This prevents an
     # empty training list from becoming an infinite, non-yielding iterator.
     _ddp, ddp_rank, _ddp_local_rank, ddp_world_size = get_dist_info()
+    _require_every_rank_owns_rows(all_parquet_paths, ddp_world_size)
     def document_batches():
         resume_pq_idx = resume_state_dict["pq_idx"] if resume_state_dict is not None else 0
         resume_rg_idx = resume_state_dict["rg_idx"] if resume_state_dict is not None else None

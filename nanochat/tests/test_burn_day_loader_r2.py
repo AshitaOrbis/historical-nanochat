@@ -143,11 +143,25 @@ def test_canary_producer_emits_run_id_and_legacy_files_report_not_run(tmp_path):
     )
     assert loaded.status == "PASS"
 
-    legacy_paths = [
-        REPO / "runs/design_c_tier1_2026-07-02/canaries.json",
-        REPO / "runs/design_c_tier1_2026-07-02/canaries_world1.json",
-        REPO / "runs/launch_2026-07-06/canaries_world1_reverify.json",
-    ]
+    # bq-2040: legacy documents are synthesized here rather than read from
+    # historical run directories. Those runs are workspace artifacts the published
+    # tree does not ship, so reading them made this test pass only where they
+    # happened to exist. A legacy file is a valid document that predates run_id:
+    # the key is absent, or present but empty.
+    legacy_missing = dict(generated)
+    del legacy_missing["run_id"]
+    legacy_empty = dict(generated, run_id="")
+    legacy_paths = []
+    for name, doc in (
+        ("legacy-missing-run-id.json", legacy_missing),
+        ("legacy-empty-run-id.json", legacy_empty),
+    ):
+        legacy_path = tmp_path / name
+        legacy_path.write_text(json.dumps(doc))
+        legacy_paths.append(legacy_path)
+    # The one historical canary file the published tree does carry stays in, as a
+    # real-world legacy shape.
+    legacy_paths.append(REPO / "runs/launch_2026-07-06/canaries_world1_reverify.json")
     for legacy_path in legacy_paths:
         legacy = json.loads(legacy_path.read_text())
         outcome = load_canaries(

@@ -17,6 +17,7 @@ The loader treats the whole file as a flat token stream and slices (B*T+1)
 contiguous tokens per iteration, same packing logic as the parquet path.
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -506,6 +507,41 @@ def cached_distributed_data_loader_with_state(
             },
         }
         yield inputs, targets, state
+
+
+def rebind_sequential_resume_geometry(state, *, batch_size, sequence_length):
+    """Return a copy of a sequential-cache resume state bound to a new B and T.
+
+    The strict resume contract refuses a cursor saved under different batch
+    geometry. That is right for a checkpoint resume and wrong for the trainer's
+    sequence-length curriculum, which changes the geometry on purpose, in
+    process, at a cursor that is still exactly valid: the consumed cursor
+    (shard position, token offset) does not depend on B or T. So this rebinds
+    only `batch_size` and `sequence_length`. Every other identity -- cache
+    manifest, shard ordering, traversal, split, world size, shard identity -- is
+    copied untouched and must still match when the new loader validates the
+    state (bq-2037).
+    """
+    if not isinstance(state, dict):
+        raise RuntimeError("sequential resume state must be an object")
+    rebound = copy.deepcopy(state)
+    per_rank = rebound.get("per_rank")
+    if not isinstance(per_rank, dict) or not per_rank:
+        raise RuntimeError("sequential resume state has no per_rank cursors to rebind")
+
+    def _rebind(contract, where):
+        if not isinstance(contract, dict) or contract.get("loader_strategy") != "sequential_cache":
+            raise RuntimeError(f"{where} is not a sequential_cache resume contract")
+        contract["batch_size"] = batch_size
+        contract["sequence_length"] = sequence_length
+
+    for rank_key, rank_state in per_rank.items():
+        if not isinstance(rank_state, dict):
+            raise RuntimeError(f"sequential resume per_rank[{rank_key}] must be an object")
+        _rebind(rank_state.get("resume_contract"), f"per_rank[{rank_key}].resume_contract")
+    if rebound.get("resume_contract") is not None:
+        _rebind(rebound["resume_contract"], "resume_contract")
+    return rebound
 
 
 def cached_distributed_data_loader(*args, **kwargs):
